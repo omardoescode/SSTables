@@ -1,32 +1,43 @@
-use bincode::{Decode, Encode};
 use rbtree::RBTree;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Result as IOResult;
+use std::path::Path;
+
+use crate::memtable::MemTableRecord;
 
 use super::{LogOperation, MemTableLog, MemTableLogReader};
 
-pub struct MemTable<T: Decode<()> + Encode + Clone> {
+pub struct MemTable<T: MemTableRecord> {
     pub tree: RBTree<String, T>,
     pub log: MemTableLog,
 }
 
-impl<T: Decode<()> + Encode + Clone> MemTable<T> {
-    pub fn new(path: &str) -> IOResult<Self> {
-        let file = OpenOptions::new().create(true).append(true).open(path)?;
-        Ok(Self {
-            tree: RBTree::new(),
-            log: MemTableLog::new(file),
-        })
+impl<T: MemTableRecord> MemTable<T> {
+    pub fn open_or_build(path: &str) -> IOResult<Self> {
+        let mut options = OpenOptions::new();
+        options.create(true).append(true).read(true);
+        if Path::new(path).exists() {
+            Self::build_from(path, &mut options)
+        } else {
+            // File does not exist → create new table
+            let file = options.open(path)?;
+            Ok(Self {
+                tree: RBTree::new(),
+                log: MemTableLog::new(file),
+            })
+        }
     }
 
-    pub fn build_from(path: &str) -> IOResult<Self> {
-        let mut reader = MemTableLogReader::open(File::open(path)?)?;
+    fn build_from(path: &str, options: &mut OpenOptions) -> IOResult<Self> {
+        let mut reader = MemTableLogReader::open(options.open(path)?)?;
         let mut tree = RBTree::<String, T>::new();
 
-        while let Some(op) = reader.next_op()? {
+        while let Some(op) = reader.next_op::<T>()? {
             match op {
-                LogOperation::Insert { key, value } => {
-                    tree.insert(key, value);
+                LogOperation::Insert { record } => {
+                    let key = record.get_key();
+                    tree.remove(&key);
+                    tree.insert(key, record);
                 }
                 LogOperation::Delete { key } => {
                     tree.remove(&key);
@@ -36,17 +47,17 @@ impl<T: Decode<()> + Encode + Clone> MemTable<T> {
 
         Ok(MemTable {
             tree,
-            log: MemTableLog::new(File::open(path)?),
+            log: MemTableLog::new(options.open(path)?),
         })
     }
 
-    pub fn insert(&mut self, key: String, value: T) -> IOResult<()> {
+    pub fn insert(&mut self, record: T) -> IOResult<()> {
+        let key = record.get_key();
         self.log.append(LogOperation::Insert {
-            key: key.clone(),
-            value: value.clone(),
+            record: record.clone(),
         })?;
         self.tree.remove(&key); // remove any previous values
-        self.tree.insert(key, value);
+        self.tree.insert(key, record);
         Ok(())
     }
 
@@ -82,14 +93,20 @@ impl<T: Decode<()> + Encode + Clone> MemTable<T> {
 #[cfg(test)]
 mod tests {
     use core::panic;
-    use std::fs::{create_dir, create_dir_all};
+    use std::fs::create_dir_all;
 
     use bincode::{Decode, Encode};
+    use uuid::Uuid;
 
-    use crate::memtable::MemTable;
+    use crate::memtable::{MemTable, MemTableRecord};
 
     #[derive(Encode, Decode, Clone)]
-    struct Dummy(String);
+    struct Dummy(String, i32);
+    impl MemTableRecord for Dummy {
+        fn get_key(&self) -> String {
+            self.0.clone()
+        }
+    }
 
     fn setup() {
         create_dir_all("temp");
@@ -98,7 +115,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn non_existing_folder() {
-        let Ok(_) = MemTable::<Dummy>::new("/folder/that/doesn't/exist") else {
+        let Ok(_) = MemTable::<Dummy>::open_or_build("/folder/that/doesn't/exist") else {
             panic!("Folder doesn't exist");
         };
     }
@@ -106,42 +123,38 @@ mod tests {
     #[test]
     fn no_repititive_items() {
         setup();
-        let Ok(mut table) = MemTable::<Dummy>::new("temp/log.txt") else {
+        let Ok(mut table) = MemTable::<Dummy>::open_or_build("temp/log.txt") else {
             panic!("Folder doesn't exist");
         };
 
-        table
-            .insert("hello".to_string(), Dummy("hello".to_string()))
-            .unwrap();
-        table
-            .insert("hello".to_string(), Dummy("hello".to_string()))
-            .unwrap();
+        table.insert(Dummy("hello".to_string(), 10)).unwrap();
+        table.insert(Dummy("hello".to_string(), 20)).unwrap();
 
         assert_eq!(table.len(), 1);
+        assert_eq!(table.get(&"hello".to_string()).unwrap().1, 20);
     }
 
     #[test]
     fn roundtrip() {
         setup();
-        let Ok(mut table) = MemTable::<Dummy>::new("temp/log.txt") else {
+        let path = format!("temp/log_{}.txt", Uuid::new_v4());
+        let Ok(mut table) = MemTable::<Dummy>::open_or_build(&path) else {
             panic!("Folder doesn't exist");
         };
 
-        table
-            .insert("hello".to_string(), Dummy("world".to_string()))
-            .unwrap();
+        table.insert(Dummy("hello".to_string(), 10)).unwrap();
         let value = table.get(&"hello".to_string()).unwrap();
-        assert_eq!(value.0, "world".to_string());
+        assert_eq!(value.1, 10);
     }
 
     #[test]
     fn deletion() {
-        let Ok(mut table) = MemTable::<Dummy>::new("temp/log.txt") else {
+        setup();
+        let path = format!("temp/log_{}.txt", Uuid::new_v4());
+        let Ok(mut table) = MemTable::<Dummy>::open_or_build(&path) else {
             panic!("Folder doesn't exist");
         };
-        table
-            .insert("hello".to_string(), Dummy("world".to_string()))
-            .unwrap();
+        table.insert(Dummy("hello".to_string(), 1)).unwrap();
 
         assert_eq!(table.len(), 1);
         table.delete("hello".to_string()).unwrap();
@@ -151,11 +164,12 @@ mod tests {
     #[test]
     fn iterates_in_order() {
         setup();
-        let mut table = MemTable::<Dummy>::new("temp/log4.txt").unwrap();
+        let path = format!("temp/log_{}.txt", Uuid::new_v4());
+        let mut table = MemTable::<Dummy>::open_or_build(&path).unwrap();
 
-        table.insert("b".into(), Dummy("2".into())).unwrap();
-        table.insert("a".into(), Dummy("1".into())).unwrap();
-        table.insert("c".into(), Dummy("3".into())).unwrap();
+        table.insert(Dummy("b".into(), 10)).unwrap();
+        table.insert(Dummy("a".into(), 20)).unwrap();
+        table.insert(Dummy("c".into(), 30)).unwrap();
 
         let keys: Vec<_> = table.iter().map(|(k, _)| k.clone()).collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
@@ -164,16 +178,17 @@ mod tests {
     #[test]
     fn rebuild_from_log() {
         setup();
-        let path = "temp/log3.txt";
+        let path = format!("temp/log_{}.txt", Uuid::new_v4());
 
         {
-            let mut table = MemTable::<Dummy>::new(path).unwrap();
-            table.insert("k1".into(), Dummy("v1".into())).unwrap();
-            table.insert("k2".into(), Dummy("v2".into())).unwrap();
+            let mut table = MemTable::<Dummy>::open_or_build(&path).unwrap();
+            table.insert(Dummy("k1".into(), 1)).unwrap();
+            table.insert(Dummy("k2".into(), 2)).unwrap();
             table.delete("k1".into()).unwrap();
+            assert_eq!(table.len(), 1);
         }
 
-        let table2 = MemTable::<Dummy>::build_from(path).unwrap();
+        let table2 = MemTable::<Dummy>::open_or_build(&path).unwrap();
 
         assert_eq!(table2.len(), 1);
         assert!(table2.get(&"k2".into()).is_some());

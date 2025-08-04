@@ -1,3 +1,5 @@
+use crate::memtable::MemTableRecord;
+
 use super::operation::LogOperation;
 use bincode::{Decode, Encode, config};
 use std::fs::File;
@@ -12,7 +14,7 @@ impl MemTableLog {
         MemTableLog { file }
     }
 
-    pub fn append<T: Encode + Decode<()>>(&mut self, opt: LogOperation<T>) -> IOResult<()> {
+    pub fn append<T: MemTableRecord>(&mut self, opt: LogOperation<T>) -> IOResult<()> {
         let Ok(decoded) = bincode::encode_to_vec(opt, config::standard()) else {
             return Err(Error::new(ErrorKind::InvalidInput, "Failed to encode data"));
         };

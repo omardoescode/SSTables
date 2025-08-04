@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 
-use SSTables::memtable::MemTable;
+use SSTables::memtable::{MemTable, MemTableRecord};
 use bincode::{Decode, Encode};
 
 #[derive(Encode, Decode, Clone)]
@@ -9,33 +9,33 @@ struct User {
     password: String,
 }
 
+impl MemTableRecord for User {
+    fn get_key(&self) -> String {
+        self.username.clone()
+    }
+}
+
 fn insertion() {
-    let mut memtable = match MemTable::<User>::new("logs/log.txt") {
+    let mut memtable = match MemTable::<User>::open_or_build("logs/log.txt") {
         Ok(val) => val,
         Err(err) => {
             panic!("Failed to create a new memtable: {err:?}");
         }
     };
 
-    memtable.insert(
-        "admin".to_string(),
-        User {
-            username: "admin".to_string(),
-            password: "1234".to_string(),
-        },
-    );
+    memtable.insert(User {
+        username: "admin".to_string(),
+        password: "1234".to_string(),
+    });
 
-    memtable.insert(
-        "admin".to_string(),
-        User {
-            username: "admin".to_string(),
-            password: "1234".to_string(),
-        },
-    );
+    memtable.insert(User {
+        username: "admin".to_string(),
+        password: "1234".to_string(),
+    });
 }
 
 fn reading() {
-    let mut memtable = match MemTable::<User>::build_from("logs/log.txt") {
+    let mut memtable = match MemTable::<User>::open_or_build("logs/log.txt") {
         Ok(val) => val,
         Err(err) => {
             panic!("Failed to create a new memtable: {err:?}");

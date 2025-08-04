@@ -1,7 +1,9 @@
+use crate::memtable::MemTableRecord;
+
 use super::operation::LogOperation;
-use bincode::{Decode, Encode, config};
+use bincode::config;
 use std::fs::File;
-use std::io::{BufReader, Error, ErrorKind, Read, Result as IOResult};
+use std::io::{BufReader, Error, Read, Result as IOResult};
 
 pub struct MemTableLogReader<R: Read> {
     pub(crate) reader: BufReader<R>,
@@ -16,7 +18,7 @@ impl MemTableLogReader<File> {
 }
 
 impl<R: Read> MemTableLogReader<R> {
-    pub fn next_op<T: Decode<()> + Encode>(&mut self) -> IOResult<Option<LogOperation<T>>> {
+    pub fn next_op<T: MemTableRecord>(&mut self) -> IOResult<Option<LogOperation<T>>> {
         let result = bincode::decode_from_std_read(&mut self.reader, config::standard());
         match result {
             Ok(op) => Ok(Some(op)),
