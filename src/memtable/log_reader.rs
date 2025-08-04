@@ -1,7 +1,7 @@
 use crate::memtable::MemTableRecord;
+use crate::serialization::{SerializationEngine, SerializationError};
 
 use super::operation::LogOperation;
-use bincode::config;
 use std::fs::File;
 use std::io::{BufReader, Error, Read, Result as IOResult};
 
@@ -18,18 +18,16 @@ impl MemTableLogReader<File> {
 }
 
 impl<R: Read> MemTableLogReader<R> {
-    pub fn next_op<T: MemTableRecord>(&mut self) -> IOResult<Option<LogOperation<T>>> {
-        let result = bincode::decode_from_std_read(&mut self.reader, config::standard());
+    pub fn next_op<T, S>(&mut self, serializer: &S) -> IOResult<Option<LogOperation<T>>>
+    where
+        T: MemTableRecord,
+        S: SerializationEngine<LogOperation<T>>,
+    {
+        let result = serializer.deserialize(&mut self.reader);
         match result {
             Ok(op) => Ok(Some(op)),
-            Err(bincode::error::DecodeError::UnexpectedEnd { .. }) => Ok(None),
-            Err(bincode::error::DecodeError::Io { inner, .. })
-                if inner.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                Ok(None)
-            }
-
-            Err(e) => Err(Error::other(e)),
+            Err(SerializationError::UnexpectedEOF) => Ok(None),
+            Err(_) => Err(Error::other("Failed to read next record")),
         }
     }
 }

@@ -1,7 +1,7 @@
 use crate::memtable::MemTableRecord;
+use crate::serialization::SerializationEngine;
 
 use super::operation::LogOperation;
-use bincode::{Decode, Encode, config};
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result as IOResult, Write};
 
@@ -14,8 +14,12 @@ impl MemTableLog {
         MemTableLog { file }
     }
 
-    pub fn append<T: MemTableRecord>(&mut self, opt: LogOperation<T>) -> IOResult<()> {
-        let Ok(decoded) = bincode::encode_to_vec(opt, config::standard()) else {
+    pub fn append<T, S>(&mut self, opt: LogOperation<T>, serializer: &S) -> IOResult<()>
+    where
+        T: MemTableRecord,
+        S: SerializationEngine<LogOperation<T>>,
+    {
+        let Ok(decoded) = serializer.serialize(opt) else {
             return Err(Error::new(ErrorKind::InvalidInput, "Failed to encode data"));
         };
         self.file.write_all(&decoded)?;

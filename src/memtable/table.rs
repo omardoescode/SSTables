@@ -3,36 +3,46 @@ use std::fs::OpenOptions;
 use std::io::Result as IOResult;
 use std::path::Path;
 
-use crate::memtable::MemTableRecord;
+use crate::{memtable::MemTableRecord, serialization::SerializationEngine};
 
 use super::{LogOperation, MemTableLog, MemTableLogReader};
 
-pub struct MemTable<T: MemTableRecord> {
+pub struct MemTable<'a, T, S>
+where
+    T: MemTableRecord,
+    S: SerializationEngine<LogOperation<T>>,
+{
     pub tree: RBTree<String, T>,
     pub log: MemTableLog,
+    pub serializer: &'a S,
 }
 
-impl<T: MemTableRecord> MemTable<T> {
-    pub fn open_or_build(path: &str) -> IOResult<Self> {
+impl<'a, T, S> MemTable<'a, T, S>
+where
+    T: MemTableRecord,
+    S: SerializationEngine<LogOperation<T>>,
+{
+    pub fn open_or_build(path: &str, serializer: &'a S) -> IOResult<Self> {
         let mut options = OpenOptions::new();
         options.create(true).append(true).read(true);
         if Path::new(path).exists() {
-            Self::build_from(path, &mut options)
+            Self::build_from(path, &mut options, serializer)
         } else {
             // File does not exist → create new table
             let file = options.open(path)?;
             Ok(Self {
                 tree: RBTree::new(),
                 log: MemTableLog::new(file),
+                serializer,
             })
         }
     }
 
-    fn build_from(path: &str, options: &mut OpenOptions) -> IOResult<Self> {
+    fn build_from(path: &str, options: &mut OpenOptions, serializer: &'a S) -> IOResult<Self> {
         let mut reader = MemTableLogReader::open(options.open(path)?)?;
         let mut tree = RBTree::<String, T>::new();
 
-        while let Some(op) = reader.next_op::<T>()? {
+        while let Some(op) = reader.next_op(serializer)? {
             match op {
                 LogOperation::Insert { record } => {
                     let key = record.get_key();
@@ -48,14 +58,18 @@ impl<T: MemTableRecord> MemTable<T> {
         Ok(MemTable {
             tree,
             log: MemTableLog::new(options.open(path)?),
+            serializer,
         })
     }
 
     pub fn insert(&mut self, record: T) -> IOResult<()> {
         let key = record.get_key();
-        self.log.append(LogOperation::Insert {
-            record: record.clone(),
-        })?;
+        self.log.append(
+            LogOperation::Insert {
+                record: record.clone(),
+            },
+            self.serializer,
+        )?;
         self.tree.remove(&key); // remove any previous values
         self.tree.insert(key, record);
         Ok(())
@@ -64,7 +78,8 @@ impl<T: MemTableRecord> MemTable<T> {
     pub fn delete(&mut self, key: String) -> IOResult<bool> {
         let result = self.tree.remove(&key).is_some();
         if result {
-            self.log.append(LogOperation::<T>::Delete { key })?;
+            self.log
+                .append(LogOperation::<T>::Delete { key }, self.serializer)?;
         }
         Ok(result)
     }
@@ -92,13 +107,15 @@ impl<T: MemTableRecord> MemTable<T> {
 
 #[cfg(test)]
 mod tests {
-    use core::panic;
     use std::fs::create_dir_all;
 
     use bincode::{Decode, Encode};
     use uuid::Uuid;
 
-    use crate::memtable::{MemTable, MemTableRecord};
+    use crate::{
+        memtable::{MemTable, MemTableRecord},
+        serialization::BinarySerializationEngine,
+    };
 
     #[derive(Encode, Decode, Clone)]
     struct Dummy(String, i32);
@@ -109,23 +126,28 @@ mod tests {
     }
 
     fn setup() {
-        create_dir_all("temp");
+        create_dir_all("temp").unwrap();
     }
 
     #[test]
     #[should_panic]
     fn non_existing_folder() {
-        let Ok(_) = MemTable::<Dummy>::open_or_build("/folder/that/doesn't/exist") else {
-            panic!("Folder doesn't exist");
-        };
+        let serializer = BinarySerializationEngine {};
+        let _table = MemTable::<Dummy, BinarySerializationEngine>::open_or_build(
+            "/folder/that/doesn't/exist/file.txt",
+            &serializer,
+        )
+        .unwrap();
     }
 
     #[test]
-    fn no_repititive_items() {
+    fn no_repetitive_items() {
         setup();
-        let Ok(mut table) = MemTable::<Dummy>::open_or_build("temp/log.txt") else {
-            panic!("Folder doesn't exist");
-        };
+        let serializer = BinarySerializationEngine {};
+        let path = format!("temp/log_{}.txt", Uuid::new_v4());
+        let mut table =
+            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
+                .expect("Failed to create table");
 
         table.insert(Dummy("hello".to_string(), 10)).unwrap();
         table.insert(Dummy("hello".to_string(), 20)).unwrap();
@@ -137,10 +159,11 @@ mod tests {
     #[test]
     fn roundtrip() {
         setup();
+        let serializer = BinarySerializationEngine {};
         let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let Ok(mut table) = MemTable::<Dummy>::open_or_build(&path) else {
-            panic!("Folder doesn't exist");
-        };
+        let mut table =
+            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
+                .expect("Failed to create table");
 
         table.insert(Dummy("hello".to_string(), 10)).unwrap();
         let value = table.get(&"hello".to_string()).unwrap();
@@ -150,10 +173,12 @@ mod tests {
     #[test]
     fn deletion() {
         setup();
+        let serializer = BinarySerializationEngine {};
         let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let Ok(mut table) = MemTable::<Dummy>::open_or_build(&path) else {
-            panic!("Folder doesn't exist");
-        };
+        let mut table =
+            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
+                .expect("Failed to create table");
+
         table.insert(Dummy("hello".to_string(), 1)).unwrap();
 
         assert_eq!(table.len(), 1);
@@ -164,8 +189,11 @@ mod tests {
     #[test]
     fn iterates_in_order() {
         setup();
+        let serializer = BinarySerializationEngine {};
         let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let mut table = MemTable::<Dummy>::open_or_build(&path).unwrap();
+        let mut table =
+            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
+                .expect("Failed to create table");
 
         table.insert(Dummy("b".into(), 10)).unwrap();
         table.insert(Dummy("a".into(), 20)).unwrap();
@@ -178,17 +206,22 @@ mod tests {
     #[test]
     fn rebuild_from_log() {
         setup();
+        let serializer = BinarySerializationEngine {};
         let path = format!("temp/log_{}.txt", Uuid::new_v4());
 
         {
-            let mut table = MemTable::<Dummy>::open_or_build(&path).unwrap();
+            let mut table =
+                MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
+                    .expect("Failed to create table");
             table.insert(Dummy("k1".into(), 1)).unwrap();
             table.insert(Dummy("k2".into(), 2)).unwrap();
             table.delete("k1".into()).unwrap();
             assert_eq!(table.len(), 1);
         }
 
-        let table2 = MemTable::<Dummy>::open_or_build(&path).unwrap();
+        let table2 =
+            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
+                .expect("Failed to create table");
 
         assert_eq!(table2.len(), 1);
         assert!(table2.get(&"k2".into()).is_some());

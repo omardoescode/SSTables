@@ -1,6 +1,9 @@
 use std::io::{self, Write};
 
-use SSTables::memtable::{MemTable, MemTableRecord};
+use SSTables::{
+    memtable::{MemTable, MemTableRecord},
+    serialization::BinarySerializationEngine,
+};
 use bincode::{Decode, Encode};
 
 #[derive(Encode, Decode, Clone)]
@@ -16,12 +19,14 @@ impl MemTableRecord for User {
 }
 
 fn insertion() {
-    let mut memtable = match MemTable::<User>::open_or_build("logs/log.txt") {
-        Ok(val) => val,
-        Err(err) => {
-            panic!("Failed to create a new memtable: {err:?}");
-        }
-    };
+    let ser = BinarySerializationEngine;
+    let mut memtable =
+        match MemTable::<User, BinarySerializationEngine>::open_or_build("logs/log.txt", &ser) {
+            Ok(val) => val,
+            Err(err) => {
+                panic!("Failed to create a new memtable: {err:?}");
+            }
+        };
 
     memtable.insert(User {
         username: "admin".to_string(),
@@ -35,12 +40,14 @@ fn insertion() {
 }
 
 fn reading() {
-    let mut memtable = match MemTable::<User>::open_or_build("logs/log.txt") {
-        Ok(val) => val,
-        Err(err) => {
-            panic!("Failed to create a new memtable: {err:?}");
-        }
-    };
+    let ser = BinarySerializationEngine;
+    let mut memtable =
+        match MemTable::<User, BinarySerializationEngine>::open_or_build("logs/log.txt", &ser) {
+            Ok(val) => val,
+            Err(err) => {
+                panic!("Failed to create a new memtable: {err:?}");
+            }
+        };
 
     println!("Len: {}", memtable.len());
 
