@@ -1,8 +1,8 @@
 mod error;
-use core::panic;
+
 use std::{
     fs::{File, OpenOptions, create_dir_all},
-    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -44,6 +44,7 @@ where
         if !db_path.exists() {
             return Err(EngineError::DBDoesntExist);
         }
+
         let _ = create_dir_all(db_path.join(Path::new("metadata")));
         let _ = create_dir_all(db_path.join(Path::new("indices")));
         let _ = create_dir_all(db_path.join(Path::new("storage")));
@@ -82,6 +83,10 @@ where
         })
     }
 
+    pub fn memtable_len(&self) -> usize {
+        self.memtable.len()
+    }
+
     pub fn insert(&mut self, record: T) -> Result<(), EngineError> {
         self.memtable
             .insert(record)
@@ -89,6 +94,115 @@ where
         self.flush_if_ready();
         Ok(())
     }
+
+    pub fn delete(&mut self, key: String) -> Result<(), EngineError> {
+        self.memtable
+            .delete(key)
+            .map_err(|err| EngineError::Deletion { err })?;
+        Ok(())
+    }
+
+    pub fn get(&mut self, key: String) -> Result<Option<T>, EngineError> {
+        let memlookup = self.memtable.get(&key);
+        if let Some(value) = memlookup {
+            return Ok(Some(value.clone()));
+        }
+
+        // Lookup in SSTables
+        for table in self.sstables.iter() {
+            if key > table.max || key < table.min {
+                continue;
+            }
+
+            let index_file = OpenOptions::new()
+                .read(true)
+                .open(table.index_path.clone())
+                .map_err(|err| EngineError::DBFileDeleted {
+                    file: table.index_path.clone(),
+                })?;
+
+            // binary search
+            let unit = self.config.index_key_string_size + self.config.index_offset_size;
+            if table.size % unit != 0 {
+                return Err(EngineError::DBCorrupted {
+                    file: table.index_path.clone(),
+                });
+            }
+            let count = table.size;
+            let mut lo = 0;
+            let mut hi = count;
+            let mut reader = BufReader::new(index_file);
+
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                let offset = (mid * unit) as u64;
+
+                reader
+                    .seek(SeekFrom::Start(offset))
+                    .map_err(|_| EngineError::DBCorrupted {
+                        file: table.index_path.clone(),
+                    })?;
+
+                let mut key_buf = vec![0u8; self.config.index_key_string_size];
+                reader
+                    .read_exact(&mut key_buf)
+                    .map_err(|_| EngineError::DBCorrupted {
+                        file: table.index_path.clone(),
+                    })?;
+
+                let current_key = String::from_utf8_lossy(&key_buf)
+                    .trim_end_matches('\0')
+                    .to_string();
+
+                if current_key < key {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+
+            // After binary search, lo is the position where key should be
+            // Check if we found the exact key
+            if lo < count {
+                let offset = (lo * unit) as u64;
+                reader
+                    .seek(SeekFrom::Start(offset))
+                    .map_err(|_| EngineError::DBCorrupted {
+                        file: table.index_path.clone(),
+                    })?;
+
+                let mut key_buf = vec![0u8; self.config.index_key_string_size];
+                reader
+                    .read_exact(&mut key_buf)
+                    .map_err(|_| EngineError::DBCorrupted {
+                        file: table.index_path.clone(),
+                    })?;
+
+                let found_key = String::from_utf8_lossy(&key_buf)
+                    .trim_end_matches('\0')
+                    .to_string();
+
+                if found_key == key {
+                    // Found the key, now read the offset
+                    let mut offset_buf = vec![0u8; self.config.index_offset_size];
+                    reader
+                        .read_exact(&mut offset_buf)
+                        .map_err(|_| EngineError::DBCorrupted {
+                            file: table.index_path.clone(),
+                        })?;
+
+                    let file_offset =
+                        u64::from_le_bytes(offset_buf.try_into().expect("offset size mismatch"));
+
+                    return Ok(Some(self.load_record(&table.storage_path, file_offset)));
+                }
+            }
+        }
+
+        // File Not Found
+        Ok(None)
+    }
+
     fn flush_if_ready(&mut self) {
         let Config {
             index_offset_size,
@@ -117,6 +231,7 @@ where
             &index_path,
             &self.memtable.tree,
             self.serializer,
+            self.config,
         )
         .unwrap();
 
@@ -135,13 +250,16 @@ where
 
                 let values: Vec<&str> = line.split(" ").collect();
 
-                if values.len() != 2 {
+                if values.len() != 5 {
                     panic!("Invalid metadata");
                 }
 
                 SSTable {
                     storage_path: values[0].to_string(),
                     index_path: values[1].to_string(),
+                    min: values[2].to_string(),
+                    max: values[3].to_string(),
+                    size: values[4].parse().unwrap(),
                 }
             })
             .collect()
@@ -151,12 +269,21 @@ where
         self.metadata.seek(SeekFrom::End(0));
         self.metadata.write_all(
             format!(
-                "{} {}\n",
+                "{} {} {} {} {}\n",
                 table.storage_path.clone(),
-                table.index_path.clone()
+                table.index_path.clone(),
+                table.min.clone(),
+                table.max.clone(),
+                table.size
             )
             .as_bytes(),
         );
         self.metadata.flush();
+    }
+
+    fn load_record(&self, storage: &str, offset: u64) -> T {
+        let file = OpenOptions::new().read(true).open(storage).unwrap();
+        let mut reader = BufReader::new(file);
+        self.serializer.deserialize(&mut reader).unwrap()
     }
 }

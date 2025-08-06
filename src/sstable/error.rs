@@ -7,4 +7,5 @@ pub enum SSTableError {
     FileCreationError,
     EncodingError,
     LogWriteError { err: io::Error },
+    EmptyMemtableError,
 }

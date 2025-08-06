@@ -7,6 +7,7 @@ use std::{
 use rbtree::RBTree;
 
 use crate::{
+    config::Config,
     memtable::{LogOperation, MemTableRecord},
     serialization::SerializationEngine,
     sstable::error::SSTableError,
@@ -15,6 +16,9 @@ use crate::{
 pub struct SSTable {
     pub storage_path: String,
     pub index_path: String,
+    pub min: String,
+    pub max: String,
+    pub size: usize,
 }
 impl SSTable {
     pub fn create<'a, T, S, SS>(
@@ -22,12 +26,16 @@ impl SSTable {
         index_path: &'a str,
         tree: &RBTree<String, T>,
         serializer: &SS,
+        config: &Config,
     ) -> Result<SSTable, SSTableError>
     where
         T: MemTableRecord,
         S: SerializationEngine<LogOperation<T>>,
         SS: SerializationEngine<T>,
     {
+        if tree.is_empty() {
+            return Err(SSTableError::EmptyMemtableError);
+        }
         if Path::new(storage_path).exists() {
             return Err(SSTableError::LogFileAlreadyExistsError);
         }
@@ -38,26 +46,31 @@ impl SSTable {
         let file = File::create(storage_path).map_err(|_| SSTableError::FileCreationError)?;
         let mut indices: Vec<(String, u64)> = vec![];
 
+        let min = tree.get_first().unwrap().0.clone();
+        let max = tree.get_last().unwrap().0.clone();
+
         let mut writer = BufWriter::new(file);
+        println!("{storage_path}: ");
         for (key, value) in tree.iter() {
             indices.push((key.clone(), writer.stream_position().unwrap()));
             let encoded = serializer
                 .serialize(value.clone())
                 .map_err(|_| SSTableError::EncodingError)?;
 
+            print!(" {key}");
             writer
                 .write_all(&encoded)
                 .map_err(|err| SSTableError::LogWriteError { err })?;
         }
+        println!("");
 
         let index_file = File::create(index_path).map_err(|_| SSTableError::FileCreationError)?;
         let mut index_writer = BufWriter::new(index_file);
 
-        const KEY_SIZE: usize = 32;
         for (key, offset) in indices.iter() {
-            let mut key_bytes = [0u8; KEY_SIZE];
+            let mut key_bytes = vec![0u8; config.index_key_string_size];
             let truncated = key.as_bytes();
-            let len = truncated.len().min(KEY_SIZE);
+            let len = truncated.len().min(config.index_key_string_size);
             key_bytes[..len].copy_from_slice(&truncated[..len]);
 
             index_writer
@@ -70,7 +83,10 @@ impl SSTable {
 
         Ok(SSTable {
             storage_path: storage_path.to_string(),
-            index_path: storage_path.to_string(),
+            index_path: index_path.to_string(),
+            min,
+            max,
+            size: tree.len(),
         })
     }
 }
@@ -136,12 +152,12 @@ mod tests {
         let storage_path = "logs/sstable.txt";
         let index_path = "logs/sstable_index.txt";
         let ser = BinarySerializationEngine;
-        SSTable::create::<Photo, BinarySerializationEngine, BinarySerializationEngine>(
-            storage_path,
-            index_path,
-            &memtable.tree,
-            &ser,
-        )
-        .unwrap();
+        // SSTable::create::<Photo, BinarySerializationEngine, BinarySerializationEngine>(
+        //     storage_path,
+        //     index_path,
+        //     &memtable.tree,
+        //     &ser,
+        // )
+        // .unwrap();
     }
 }

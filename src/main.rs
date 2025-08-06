@@ -1,4 +1,7 @@
-use std::{fs::File, io::{BufReader, BufRead}};
+use std::{
+    fs::File,
+    io::{BufRead, BufReader},
+};
 
 use SSTables::{
     config::Config, engine::Engine, memtable::MemTableRecord,
@@ -43,23 +46,33 @@ fn main() {
     )
     .unwrap();
 
-    let file = File::open("resources/photos.txt").unwrap();
-    let reader = BufReader::new(file);
+    // Seed if empty
+    if engine.memtable_len() == 0 {
+        let file = File::open("resources/photos.txt").unwrap();
+        let reader = BufReader::new(file);
 
-    for line in reader.lines() {
-        let line = line.unwrap();
-        let values: Vec<&str> = line.split(" ").collect();
+        for line in reader.lines() {
+            let line = line.unwrap();
+            let values: Vec<&str> = line.split(" ").collect();
 
-        if values.len() != 3 {
-            panic!("Wrong value");
+            if values.len() != 3 {
+                panic!("Wrong value");
+            }
+
+            engine
+                .insert(Photo {
+                    id: values[0].to_string().parse().unwrap(),
+                    url: values[1].to_string(),
+                    thumbnail_url: values[2].to_string(),
+                })
+                .unwrap();
         }
+    }
 
-        engine
-            .insert(Photo {
-                id: values[0].to_string().parse().unwrap(),
-                url: values[1].to_string(),
-                thumbnail_url: values[2].to_string(),
-            })
-            .unwrap();
+    for i in 1..5001 {
+        assert!(
+            engine.get(i.to_string()).unwrap().is_some(),
+            "loading {i} failed"
+        );
     }
 }
