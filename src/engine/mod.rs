@@ -1,9 +1,14 @@
 mod error;
-use std::{fs::create_dir_all, path::Path, vec};
+use core::panic;
+use std::{
+    fs::{File, OpenOptions, create_dir_all},
+    io::{BufRead, BufReader, Seek, SeekFrom, Write},
+    path::Path,
+};
 
 use crate::{
     config::Config,
-    memtable::{self, LogOperation, MemTable, MemTableRecord},
+    memtable::{LogOperation, MemTable, MemTableRecord},
     serialization::SerializationEngine,
     sstable::SSTable,
 };
@@ -15,6 +20,7 @@ where
     S: SerializationEngine<LogOperation<T>>,
     SS: SerializationEngine<T>,
 {
+    metadata: File,
     db_path: &'a str,
     memtable: Box<MemTable<'a, T, S>>,
     sstables: Vec<SSTable>,
@@ -54,9 +60,22 @@ where
 
         let memtable = Box::new(memtable);
 
+        // Load all sstables
+        let metadata_path = db_path.join(format!("metadata/{}.meta", T::TYPE_NAME));
+        let metadata = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(metadata_path)
+            .unwrap(); // TODO: Fix this unwrap later
+
+        let sstables = Self::read_sstables(&metadata);
+
         Ok(Engine {
+            metadata,
             memtable,
-            sstables: vec![],
+            sstables,
             config,
             serializer: storage_serializer,
             db_path: db,
@@ -100,8 +119,44 @@ where
             self.serializer,
         )
         .unwrap();
+
+        self.add_sstable_to_metadata(&table);
         self.sstables.push(table);
 
         self.memtable.clear();
+    }
+
+    fn read_sstables(metadata_file: &File) -> Vec<SSTable> {
+        let reader = BufReader::new(metadata_file);
+        reader
+            .lines()
+            .map(|line| {
+                let line = line.unwrap();
+
+                let values: Vec<&str> = line.split(" ").collect();
+
+                if values.len() != 2 {
+                    panic!("Invalid metadata");
+                }
+
+                SSTable {
+                    storage_path: values[0].to_string(),
+                    index_path: values[1].to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn add_sstable_to_metadata(&mut self, table: &SSTable) {
+        self.metadata.seek(SeekFrom::End(0));
+        self.metadata.write_all(
+            format!(
+                "{} {}\n",
+                table.storage_path.clone(),
+                table.index_path.clone()
+            )
+            .as_bytes(),
+        );
+        self.metadata.flush();
     }
 }
