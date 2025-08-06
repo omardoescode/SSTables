@@ -103,6 +103,12 @@ where
     pub fn iter_mut(&mut self) -> rbtree::IterMut<String, T> {
         self.tree.iter_mut()
     }
+
+    pub fn clear(&mut self) -> IOResult<()> {
+        self.tree.clear();
+        self.log.clear()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

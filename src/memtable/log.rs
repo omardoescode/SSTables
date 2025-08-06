@@ -3,10 +3,10 @@ use crate::serialization::SerializationEngine;
 
 use super::operation::LogOperation;
 use std::fs::File;
-use std::io::{Error, ErrorKind, Result as IOResult, Write};
+use std::io::{Error, ErrorKind, Result as IOResult, Seek, SeekFrom, Write};
 
 pub struct MemTableLog {
-    pub(crate) file: File,
+    pub file: File,
 }
 
 impl MemTableLog {
@@ -23,6 +23,13 @@ impl MemTableLog {
             return Err(Error::new(ErrorKind::InvalidInput, "Failed to encode data"));
         };
         self.file.write_all(&decoded)?;
+        self.file.flush()?;
+        Ok(())
+    }
+
+    pub fn clear(&mut self) -> IOResult<()> {
+        self.file.set_len(0)?;
+        self.file.seek(SeekFrom::Start(0))?;
         self.file.flush()?;
         Ok(())
     }

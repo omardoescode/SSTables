@@ -4,9 +4,9 @@ use std::fs;
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
-    pub index_key_string_size: u8,
-    pub index_offset_size: u8,
-    pub memtable_threshold: u16,
+    pub index_key_string_size: usize,
+    pub index_offset_size: usize,
+    pub memtable_threshold: usize,
 }
 
 impl Config {

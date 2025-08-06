@@ -1,9 +1,5 @@
-use std::io::{self, Write};
-
 use SSTables::{
-    config::Config,
-    engine::Engine,
-    memtable::{MemTable, MemTableRecord},
+    config::Config, engine::Engine, memtable::MemTableRecord,
     serialization::BinarySerializationEngine,
 };
 use bincode::{Decode, Encode};
@@ -24,6 +20,11 @@ impl MemTableRecord for User {
 fn main() {
     let serializer = BinarySerializationEngine;
     let config = Config::from_file("config.yaml").unwrap();
-    let mut engine =
-        Engine::<User, BinarySerializationEngine>::new("temp/db/", &serializer, &config).unwrap();
+    let mut engine = Engine::<User, BinarySerializationEngine, BinarySerializationEngine>::new(
+        "temp/db/",
+        &serializer,
+        &serializer,
+        &config,
+    )
+    .unwrap();
 }

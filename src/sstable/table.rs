@@ -4,6 +4,8 @@ use std::{
     path::Path,
 };
 
+use rbtree::RBTree;
+
 use crate::{
     memtable::{LogOperation, MemTable, MemTableRecord},
     serialization::SerializationEngine,
@@ -14,13 +16,12 @@ pub struct SSTable {
     storage_path: String,
     index_path: String,
 }
-
 impl SSTable {
-    fn create<'a, T, S, SS>(
+    pub fn create<'a, T, S, SS>(
         storage_path: &'a str,
         index_path: &'a str,
-        table: MemTable<'a, T, S>,
-        serializer: SS,
+        tree: &RBTree<String, T>,
+        serializer: &SS,
     ) -> Result<SSTable, SSTableError>
     where
         T: MemTableRecord,
@@ -38,7 +39,7 @@ impl SSTable {
         let mut indices: Vec<(String, u64)> = vec![];
 
         let mut writer = BufWriter::new(file);
-        for (key, value) in table.iter() {
+        for (key, value) in tree.iter() {
             indices.push((key.clone(), writer.stream_position().unwrap()));
             let encoded = serializer
                 .serialize(value.clone())
