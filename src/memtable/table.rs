@@ -120,6 +120,7 @@ mod tests {
     #[derive(Encode, Decode, Clone)]
     struct Dummy(String, i32);
     impl MemTableRecord for Dummy {
+        const TYPE_NAME: &'static str = "Dummy";
         fn get_key(&self) -> String {
             self.0.clone()
         }

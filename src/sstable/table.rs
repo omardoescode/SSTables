@@ -1,7 +1,6 @@
 use std::{
-    fmt::Debug,
     fs::File,
-    io::{BufWriter, Write},
+    io::{BufWriter, Seek, Write},
     path::Path,
 };
 
@@ -11,15 +10,16 @@ use crate::{
     sstable::error::SSTableError,
 };
 
-#[derive(Debug)]
 pub struct SSTable {
-    path: String,
+    storage_path: String,
+    index_path: String,
 }
 
 impl SSTable {
     fn create<'a, T, S, SS>(
+        storage_path: &'a str,
+        index_path: &'a str,
         table: MemTable<'a, T, S>,
-        path: &'a str,
         serializer: SS,
     ) -> Result<SSTable, SSTableError>
     where
@@ -27,16 +27,19 @@ impl SSTable {
         S: SerializationEngine<LogOperation<T>>,
         SS: SerializationEngine<T>,
     {
-        if Path::new(path).exists() {
+        if Path::new(storage_path).exists() {
             return Err(SSTableError::LogFileAlreadyExistsError);
         }
+        if Path::new(index_path).exists() {
+            return Err(SSTableError::IndexFileAlreadyExistsError);
+        }
 
-        let file = File::create(path).map_err(|_| SSTableError::FileCreationError)?;
-
-        // TODO: Do I need to write metadata??
+        let file = File::create(storage_path).map_err(|_| SSTableError::FileCreationError)?;
+        let mut indices: Vec<(String, u64)> = vec![];
 
         let mut writer = BufWriter::new(file);
-        for (_, value) in table.iter() {
+        for (key, value) in table.iter() {
+            indices.push((key.clone(), writer.stream_position().unwrap()));
             let encoded = serializer
                 .serialize(value.clone())
                 .map_err(|_| SSTableError::EncodingError)?;
@@ -46,8 +49,27 @@ impl SSTable {
                 .map_err(|err| SSTableError::LogWriteError { err })?;
         }
 
+        let index_file = File::create(index_path).map_err(|_| SSTableError::FileCreationError)?;
+        let mut index_writer = BufWriter::new(index_file);
+
+        const KEY_SIZE: usize = 32;
+        for (key, offset) in indices.iter() {
+            let mut key_bytes = [0u8; KEY_SIZE];
+            let truncated = key.as_bytes();
+            let len = truncated.len().min(KEY_SIZE);
+            key_bytes[..len].copy_from_slice(&truncated[..len]);
+
+            index_writer
+                .write_all(&key_bytes)
+                .map_err(|err| SSTableError::LogWriteError { err })?;
+            index_writer
+                .write_all(&offset.to_le_bytes())
+                .map_err(|err| SSTableError::LogWriteError { err })?;
+        }
+
         Ok(SSTable {
-            path: String::from(path),
+            storage_path: storage_path.to_string(),
+            index_path: storage_path.to_string(),
         })
     }
 }
@@ -56,7 +78,7 @@ impl SSTable {
 mod tests {
     use std::{
         fs::File,
-        io::{self, BufRead, BufReader},
+        io::{BufRead, BufReader},
         panic,
     };
     use uuid::Uuid;
@@ -77,6 +99,7 @@ mod tests {
     }
 
     impl MemTableRecord for Photo {
+        const TYPE_NAME: &'static str = "Photo";
         fn get_key(&self) -> String {
             self.id.to_string()
         }
@@ -110,6 +133,12 @@ mod tests {
                 .unwrap();
         }
 
-        SSTable::create(memtable, "logs/sstable.txt", BinarySerializationEngine).unwrap();
+        SSTable::create(
+            "logs/sstable.txt",
+            "logs/sstable_index.txt",
+            memtable,
+            BinarySerializationEngine,
+        )
+        .unwrap();
     }
 }

@@ -1,6 +1,8 @@
 use std::io::{self, Write};
 
 use SSTables::{
+    config::Config,
+    engine::Engine,
     memtable::{MemTable, MemTableRecord},
     serialization::BinarySerializationEngine,
 };
@@ -13,64 +15,15 @@ struct User {
 }
 
 impl MemTableRecord for User {
+    const TYPE_NAME: &'static str = "User";
     fn get_key(&self) -> String {
         self.username.clone()
     }
 }
 
-fn insertion() {
-    let ser = BinarySerializationEngine;
-    let mut memtable =
-        match MemTable::<User, BinarySerializationEngine>::open_or_build("logs/log.txt", &ser) {
-            Ok(val) => val,
-            Err(err) => {
-                panic!("Failed to create a new memtable: {err:?}");
-            }
-        };
-
-    memtable.insert(User {
-        username: "admin".to_string(),
-        password: "1234".to_string(),
-    });
-
-    memtable.insert(User {
-        username: "admin".to_string(),
-        password: "1234".to_string(),
-    });
-}
-
-fn reading() {
-    let ser = BinarySerializationEngine;
-    let mut memtable =
-        match MemTable::<User, BinarySerializationEngine>::open_or_build("logs/log.txt", &ser) {
-            Ok(val) => val,
-            Err(err) => {
-                panic!("Failed to create a new memtable: {err:?}");
-            }
-        };
-
-    println!("Len: {}", memtable.len());
-
-    for user in memtable.iter() {
-        println!(
-            "key: {}, username: {}, password: {}",
-            user.0, user.1.username, user.1.password
-        );
-    }
-}
-
 fn main() {
-    println!("Enter 0 for insertion, 1 for reading:");
-
-    print!("> ");
-    io::stdout().flush().unwrap();
-
-    let mut choice = String::new();
-    io::stdin().read_line(&mut choice).unwrap();
-
-    match choice.trim() {
-        "0" => insertion(),
-        "1" => reading(),
-        _ => println!("Invalid choice! Please enter 0 or 1."),
-    }
+    let serializer = BinarySerializationEngine;
+    let config = Config::from_file("config.yaml").unwrap();
+    let mut engine =
+        Engine::<User, BinarySerializationEngine>::new("temp/db/", &serializer, &config).unwrap();
 }
