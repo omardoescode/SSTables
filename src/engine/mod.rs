@@ -17,7 +17,7 @@ where
 {
     db_path: &'a str,
     memtable: Box<MemTable<'a, T, S>>,
-    sstables: Vec<String>,
+    sstables: Vec<SSTable>,
     config: &'a Config,
     serializer: &'a SS,
 }
@@ -83,17 +83,24 @@ where
 
         let [storage_path, index_path] = ["storage", "indices"].map(|dir| {
             Path::new(&self.db_path)
-                .join(format!("{}/{}.log", dir, T::TYPE_NAME))
+                .join(format!(
+                    "{}/{}-{}.log",
+                    dir,
+                    T::TYPE_NAME,
+                    self.sstables.len()
+                ))
                 .display()
                 .to_string()
         });
 
-        SSTable::create::<T, S, SS>(
+        let table = SSTable::create::<T, S, SS>(
             &storage_path,
             &index_path,
             &self.memtable.tree,
             self.serializer,
-        );
+        )
+        .unwrap();
+        self.sstables.push(table);
 
         self.memtable.clear();
     }

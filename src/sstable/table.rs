@@ -7,14 +7,14 @@ use std::{
 use rbtree::RBTree;
 
 use crate::{
-    memtable::{LogOperation, MemTable, MemTableRecord},
+    memtable::{LogOperation, MemTableRecord},
     serialization::SerializationEngine,
     sstable::error::SSTableError,
 };
 
 pub struct SSTable {
-    storage_path: String,
-    index_path: String,
+    pub storage_path: String,
+    pub index_path: String,
 }
 impl SSTable {
     pub fn create<'a, T, S, SS>(
@@ -80,7 +80,6 @@ mod tests {
     use std::{
         fs::File,
         io::{BufRead, BufReader},
-        panic,
     };
     use uuid::Uuid;
 
@@ -134,11 +133,14 @@ mod tests {
                 .unwrap();
         }
 
-        SSTable::create(
-            "logs/sstable.txt",
-            "logs/sstable_index.txt",
-            memtable,
-            BinarySerializationEngine,
+        let storage_path = "logs/sstable.txt";
+        let index_path = "logs/sstable_index.txt";
+        let ser = BinarySerializationEngine;
+        SSTable::create::<Photo, BinarySerializationEngine, BinarySerializationEngine>(
+            storage_path,
+            index_path,
+            &memtable.tree,
+            &ser,
         )
         .unwrap();
     }
