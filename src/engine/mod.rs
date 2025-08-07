@@ -18,7 +18,7 @@ pub struct Engine<'a, T, S, SS>
 where
     T: MemTableRecord,
     S: SerializationEngine<LogOperation<T>>,
-    SS: SerializationEngine<T>,
+    SS: SerializationEngine<Option<T>>,
 {
     metadata: File,
     db_path: &'a str,
@@ -32,7 +32,7 @@ impl<'a, T, S, SS> Engine<'a, T, S, SS>
 where
     T: MemTableRecord,
     S: SerializationEngine<LogOperation<T>>,
-    SS: SerializationEngine<T>,
+    SS: SerializationEngine<Option<T>>,
 {
     pub fn new(
         db: &'a str,
@@ -105,11 +105,11 @@ where
     pub fn get(&mut self, key: String) -> Result<Option<T>, EngineError> {
         let memlookup = self.memtable.get(&key);
         if let Some(value) = memlookup {
-            return Ok(Some(value.clone()));
+            return Ok(value.clone());
         }
 
         // Lookup in SSTables
-        for table in self.sstables.iter() {
+        for table in self.sstables.iter().rev() {
             if key > table.max || key < table.min {
                 continue;
             }
@@ -194,7 +194,7 @@ where
                     let file_offset =
                         u64::from_le_bytes(offset_buf.try_into().expect("offset size mismatch"));
 
-                    return Ok(Some(self.load_record(&table.storage_path, file_offset)));
+                    return Ok(self.load_record(&table.storage_path, file_offset));
                 }
             }
         }
@@ -281,9 +281,10 @@ where
         self.metadata.flush();
     }
 
-    fn load_record(&self, storage: &str, offset: u64) -> T {
+    fn load_record(&self, storage: &str, offset: u64) -> Option<T> {
         let file = OpenOptions::new().read(true).open(storage).unwrap();
         let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(offset));
         self.serializer.deserialize(&mut reader).unwrap()
     }
 }

@@ -24,14 +24,14 @@ impl SSTable {
     pub fn create<'a, T, S, SS>(
         storage_path: &'a str,
         index_path: &'a str,
-        tree: &RBTree<String, T>,
+        tree: &RBTree<String, Option<T>>,
         serializer: &SS,
         config: &Config,
     ) -> Result<SSTable, SSTableError>
     where
         T: MemTableRecord,
         S: SerializationEngine<LogOperation<T>>,
-        SS: SerializationEngine<T>,
+        SS: SerializationEngine<Option<T>>,
     {
         if tree.is_empty() {
             return Err(SSTableError::EmptyMemtableError);
@@ -102,7 +102,6 @@ mod tests {
     use crate::{
         memtable::{MemTable, MemTableRecord},
         serialization::BinarySerializationEngine,
-        sstable::SSTable,
     };
 
     use bincode::{Decode, Encode};

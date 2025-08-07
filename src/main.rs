@@ -67,12 +67,23 @@ fn main() {
                 })
                 .unwrap();
         }
+
+        engine.delete("1000".to_string());
+        engine.delete("50".to_string());
+        engine.delete("5000".to_string());
     }
 
+    println!("Engine has {} in memory", engine.memtable_len());
+
     for i in 1..5001 {
-        assert!(
-            engine.get(i.to_string()).unwrap().is_some(),
-            "loading {i} failed"
-        );
+        let photo = engine.get(i.to_string()).unwrap();
+        if i == 1000 || i == 50 || i == 5000 {
+            assert!(photo.is_none(), "{i} still exists");
+            continue;
+        }
+        assert!(photo.is_some(), "loading {i} failed");
+        let photo = photo.unwrap();
+
+        println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
     }
 }

@@ -12,7 +12,7 @@ where
     T: MemTableRecord,
     S: SerializationEngine<LogOperation<T>>,
 {
-    pub tree: RBTree<String, T>,
+    pub tree: RBTree<String, Option<T>>,
     pub log: MemTableLog,
     pub serializer: &'a S,
 }
@@ -40,17 +40,18 @@ where
 
     fn build_from(path: &str, options: &mut OpenOptions, serializer: &'a S) -> IOResult<Self> {
         let mut reader = MemTableLogReader::open(options.open(path)?)?;
-        let mut tree = RBTree::<String, T>::new();
+        let mut tree = RBTree::<String, Option<T>>::new();
 
         while let Some(op) = reader.next_op(serializer)? {
             match op {
                 LogOperation::Insert { record } => {
                     let key = record.get_key();
                     tree.remove(&key);
-                    tree.insert(key, record);
+                    tree.insert(key, Some(record));
                 }
                 LogOperation::Delete { key } => {
                     tree.remove(&key);
+                    tree.insert(key, None);
                 }
             }
         }
@@ -71,20 +72,23 @@ where
             self.serializer,
         )?;
         self.tree.remove(&key); // remove any previous values
-        self.tree.insert(key, record);
+        self.tree.insert(key, Some(record));
         Ok(())
     }
 
-    pub fn delete(&mut self, key: String) -> IOResult<bool> {
-        let result = self.tree.remove(&key).is_some();
-        if result {
-            self.log
-                .append(LogOperation::<T>::Delete { key }, self.serializer)?;
-        }
-        Ok(result)
+    pub fn delete(&mut self, key: String) -> IOResult<()> {
+        self.tree.remove(&key); // remove any previous values
+        self.tree.insert(key.clone(), None);
+        println!(
+            "{key} is being deleted. New min is {}",
+            self.tree.get_first().unwrap().0
+        );
+        self.log
+            .append(LogOperation::<T>::Delete { key }, self.serializer)?;
+        Ok(())
     }
 
-    pub fn get(&self, key: &String) -> Option<&T> {
+    pub fn get(&self, key: &String) -> Option<&Option<T>> {
         self.tree.get(key)
     }
 
@@ -96,11 +100,11 @@ where
         self.tree.is_empty()
     }
 
-    pub fn iter(&self) -> rbtree::Iter<String, T> {
+    pub fn iter(&self) -> rbtree::Iter<String, Option<T>> {
         self.tree.iter()
     }
 
-    pub fn iter_mut(&mut self) -> rbtree::IterMut<String, T> {
+    pub fn iter_mut(&mut self) -> rbtree::IterMut<String, Option<T>> {
         self.tree.iter_mut()
     }
 
