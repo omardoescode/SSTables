@@ -1,4 +1,4 @@
-use std::{fmt::Debug, io};
+use std::{fmt::Debug, fs::File, io};
 
 #[derive(Debug)]
 pub enum SSTableError {
@@ -8,4 +8,7 @@ pub enum SSTableError {
     EncodingError,
     LogWriteError { err: io::Error },
     EmptyMemtableError,
+    DBFileDeleted { file: String },
+    DBFilePermissionsChanged { file: String },
+    DBFileCorrupted { file: String },
 }

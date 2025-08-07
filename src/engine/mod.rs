@@ -110,92 +110,9 @@ where
 
         // Lookup in SSTables
         for table in self.sstables.iter().rev() {
-            if key > table.max || key < table.min {
-                continue;
-            }
-
-            let index_file = OpenOptions::new()
-                .read(true)
-                .open(table.index_path.clone())
-                .map_err(|err| EngineError::DBFileDeleted {
-                    file: table.index_path.clone(),
-                })?;
-
-            // binary search
-            let unit = self.config.index_key_string_size + self.config.index_offset_size;
-            if table.size % unit != 0 {
-                return Err(EngineError::DBCorrupted {
-                    file: table.index_path.clone(),
-                });
-            }
-            let count = table.size;
-            let mut lo = 0;
-            let mut hi = count;
-            let mut reader = BufReader::new(index_file);
-
-            while lo < hi {
-                let mid = (lo + hi) / 2;
-                let offset = (mid * unit) as u64;
-
-                reader
-                    .seek(SeekFrom::Start(offset))
-                    .map_err(|_| EngineError::DBCorrupted {
-                        file: table.index_path.clone(),
-                    })?;
-
-                let mut key_buf = vec![0u8; self.config.index_key_string_size];
-                reader
-                    .read_exact(&mut key_buf)
-                    .map_err(|_| EngineError::DBCorrupted {
-                        file: table.index_path.clone(),
-                    })?;
-
-                let current_key = String::from_utf8_lossy(&key_buf)
-                    .trim_end_matches('\0')
-                    .to_string();
-
-                if current_key < key {
-                    lo = mid + 1;
-                } else {
-                    hi = mid;
-                }
-            }
-
-            // After binary search, lo is the position where key should be
-            // Check if we found the exact key
-            if lo < count {
-                let offset = (lo * unit) as u64;
-                reader
-                    .seek(SeekFrom::Start(offset))
-                    .map_err(|_| EngineError::DBCorrupted {
-                        file: table.index_path.clone(),
-                    })?;
-
-                let mut key_buf = vec![0u8; self.config.index_key_string_size];
-                reader
-                    .read_exact(&mut key_buf)
-                    .map_err(|_| EngineError::DBCorrupted {
-                        file: table.index_path.clone(),
-                    })?;
-
-                let found_key = String::from_utf8_lossy(&key_buf)
-                    .trim_end_matches('\0')
-                    .to_string();
-
-                if found_key == key {
-                    // Found the key, now read the offset
-                    let mut offset_buf = vec![0u8; self.config.index_offset_size];
-                    reader
-                        .read_exact(&mut offset_buf)
-                        .map_err(|_| EngineError::DBCorrupted {
-                            file: table.index_path.clone(),
-                        })?;
-
-                    let file_offset =
-                        u64::from_le_bytes(offset_buf.try_into().expect("offset size mismatch"));
-
-                    return Ok(self.load_record(&table.storage_path, file_offset));
-                }
+            let lookup = table.get(&key, self.config, self.serializer).unwrap(); // TODO: Handle These errors
+            if let Some(value) = lookup {
+                return Ok(value);
             }
         }
 
@@ -279,12 +196,5 @@ where
             .as_bytes(),
         );
         self.metadata.flush();
-    }
-
-    fn load_record(&self, storage: &str, offset: u64) -> Option<T> {
-        let file = OpenOptions::new().read(true).open(storage).unwrap();
-        let mut reader = BufReader::new(file);
-        reader.seek(SeekFrom::Start(offset));
-        self.serializer.deserialize(&mut reader).unwrap()
     }
 }

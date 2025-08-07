@@ -1,6 +1,6 @@
 use std::{
-    fs::File,
-    io::{BufWriter, Seek, Write},
+    fs::{File, OpenOptions},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -88,6 +88,121 @@ impl SSTable {
             max,
             size: tree.len(),
         })
+    }
+
+    pub fn get<T, SS>(
+        &self,
+        key: &str,
+        config: &Config,
+        serializer: &SS,
+    ) -> Result<Option<Option<T>>, SSTableError>
+    where
+        T: MemTableRecord,
+        SS: SerializationEngine<Option<T>>,
+    {
+        if key > self.max.as_str() || key < self.min.as_str() {
+            return Ok(None);
+        }
+
+        let index_file = OpenOptions::new()
+            .read(true)
+            .open(self.index_path.clone())
+            .map_err(|err| SSTableError::DBFileDeleted {
+                file: self.index_path.clone(),
+            })?;
+
+        // binary search
+        let unit = config.index_key_string_size + config.index_offset_size;
+        if self.size % unit != 0 {
+            return Err(SSTableError::DBFileCorrupted {
+                file: self.index_path.clone(),
+            });
+        }
+        let count = self.size;
+        let mut lo = 0;
+        let mut hi = count;
+        let mut reader = BufReader::new(index_file);
+
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let offset = (mid * unit) as u64;
+
+            reader
+                .seek(SeekFrom::Start(offset))
+                .map_err(|_| SSTableError::DBFileCorrupted {
+                    file: self.index_path.clone(),
+                })?;
+
+            let mut key_buf = vec![0u8; config.index_key_string_size];
+            reader
+                .read_exact(&mut key_buf)
+                .map_err(|_| SSTableError::DBFileCorrupted {
+                    file: self.index_path.clone(),
+                })?;
+
+            let current_key = String::from_utf8_lossy(&key_buf)
+                .trim_end_matches('\0')
+                .to_string();
+
+            if current_key.as_str() < key {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        // After binary search, lo is the position where key should be
+        // Check if we found the exact key
+        if lo < count {
+            let offset = (lo * unit) as u64;
+            reader
+                .seek(SeekFrom::Start(offset))
+                .map_err(|_| SSTableError::DBFileCorrupted {
+                    file: self.index_path.clone(),
+                })?;
+
+            let mut key_buf = vec![0u8; config.index_key_string_size];
+            reader
+                .read_exact(&mut key_buf)
+                .map_err(|_| SSTableError::DBFileCorrupted {
+                    file: self.index_path.clone(),
+                })?;
+
+            let found_key = String::from_utf8_lossy(&key_buf)
+                .trim_end_matches('\0')
+                .to_string();
+
+            if found_key == key {
+                // Found the key, now read the offset
+                let mut offset_buf = vec![0u8; config.index_offset_size];
+                reader
+                    .read_exact(&mut offset_buf)
+                    .map_err(|_| SSTableError::DBFileCorrupted {
+                        file: self.index_path.clone(),
+                    })?;
+
+                let file_offset =
+                    u64::from_le_bytes(offset_buf.try_into().expect("offset size mismatch"));
+
+                return Ok(Some(self.load_record(
+                    &self.storage_path,
+                    file_offset,
+                    serializer,
+                )));
+            }
+        }
+        Ok(None)
+    }
+
+    fn load_record<T, SS>(&self, storage: &str, offset: u64, serializer: &SS) -> Option<T>
+    where
+        T: MemTableRecord,
+        SS: SerializationEngine<Option<T>>,
+    {
+        let file = OpenOptions::new().read(true).open(storage).unwrap();
+        let mut reader = BufReader::new(file);
+        reader.seek(SeekFrom::Start(offset));
+        serializer.deserialize(&mut reader).unwrap()
     }
 }
 
