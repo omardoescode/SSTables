@@ -117,18 +117,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::fs::create_dir_all;
-
     use bincode::{Decode, Encode};
-    use uuid::Uuid;
+    use tempfile::NamedTempFile;
 
     use crate::{
         memtable::{MemTable, MemTableRecord},
         serialization::BinarySerializationEngine,
     };
 
-    #[derive(Encode, Decode, Clone)]
+    #[derive(Encode, Decode, Clone, Debug, PartialEq)]
     struct Dummy(String, i32);
+
     impl MemTableRecord for Dummy {
         const TYPE_NAME: &'static str = "Dummy";
         fn get_key(&self) -> String {
@@ -136,75 +135,80 @@ mod tests {
         }
     }
 
-    fn setup() {
-        create_dir_all("temp").unwrap();
+    fn new_temp_path() -> String {
+        let file = NamedTempFile::new().unwrap();
+        file.path().to_str().unwrap().to_string()
+    }
+
+    fn create_memtable<'a>(
+        path: &str,
+        serializer: &'a BinarySerializationEngine,
+    ) -> MemTable<'a, Dummy, BinarySerializationEngine> {
+        MemTable::<Dummy, BinarySerializationEngine>::open_or_build(path, &serializer)
+            .expect("Failed to create MemTable")
     }
 
     #[test]
-    #[should_panic]
-    fn non_existing_folder() {
+    fn non_existing_folder_should_fail() {
         let serializer = BinarySerializationEngine {};
-        let _table = MemTable::<Dummy, BinarySerializationEngine>::open_or_build(
-            "/folder/that/doesn't/exist/file.txt",
+        let result = MemTable::<Dummy, BinarySerializationEngine>::open_or_build(
+            "/invalid/path/to/file.log",
             &serializer,
-        )
-        .unwrap();
+        );
+        assert!(result.is_err());
     }
 
     #[test]
     fn no_repetitive_items() {
-        setup();
-        let serializer = BinarySerializationEngine {};
-        let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let mut table =
-            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
-                .expect("Failed to create table");
+        let ser = BinarySerializationEngine;
+        let path = new_temp_path();
+        let mut table = create_memtable(&path, &ser);
 
         table.insert(Dummy("hello".to_string(), 10)).unwrap();
         table.insert(Dummy("hello".to_string(), 20)).unwrap();
 
         assert_eq!(table.len(), 1);
-        assert_eq!(table.get(&"hello".to_string()).unwrap().1, 20);
+        assert_eq!(
+            table.get(&"hello".to_string()).unwrap().as_ref().unwrap().1,
+            20
+        );
     }
 
     #[test]
-    fn roundtrip() {
-        setup();
-        let serializer = BinarySerializationEngine {};
-        let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let mut table =
-            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
-                .expect("Failed to create table");
+    fn roundtrip_get() {
+        let ser = BinarySerializationEngine;
+        let path = new_temp_path();
+        let mut table = create_memtable(&path, &ser);
 
         table.insert(Dummy("hello".to_string(), 10)).unwrap();
-        let value = table.get(&"hello".to_string()).unwrap();
-        assert_eq!(value.1, 10);
+
+        let value = table.get(&"hello".to_string());
+        assert!(value.is_some());
+        assert_eq!(value.unwrap().as_ref().unwrap().1, 10);
     }
 
     #[test]
-    fn deletion() {
-        setup();
-        let serializer = BinarySerializationEngine {};
-        let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let mut table =
-            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
-                .expect("Failed to create table");
+    fn deletion_marks_none() {
+        let ser = BinarySerializationEngine;
+        let path = new_temp_path();
+        let mut table = create_memtable(&path, &ser);
 
         table.insert(Dummy("hello".to_string(), 1)).unwrap();
-
         assert_eq!(table.len(), 1);
+
         table.delete("hello".to_string()).unwrap();
-        assert_eq!(table.len(), 0);
+
+        // Still present in tree, but value is None
+        assert_eq!(table.len(), 1);
+        assert!(table.get(&"hello".to_string()).is_some());
+        assert!(table.get(&"hello".to_string()).unwrap().is_none());
     }
 
     #[test]
     fn iterates_in_order() {
-        setup();
-        let serializer = BinarySerializationEngine {};
-        let path = format!("temp/log_{}.txt", Uuid::new_v4());
-        let mut table =
-            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
-                .expect("Failed to create table");
+        let ser = BinarySerializationEngine;
+        let path = new_temp_path();
+        let mut table = create_memtable(&path, &ser);
 
         table.insert(Dummy("b".into(), 10)).unwrap();
         table.insert(Dummy("a".into(), 20)).unwrap();
@@ -215,27 +219,24 @@ mod tests {
     }
 
     #[test]
-    fn rebuild_from_log() {
-        setup();
-        let serializer = BinarySerializationEngine {};
-        let path = format!("temp/log_{}.txt", Uuid::new_v4());
+    fn rebuild_from_log_preserves_state() {
+        let ser = BinarySerializationEngine;
+        let path = new_temp_path();
 
         {
-            let mut table =
-                MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
-                    .expect("Failed to create table");
+            let mut table = create_memtable(&path, &ser);
             table.insert(Dummy("k1".into(), 1)).unwrap();
             table.insert(Dummy("k2".into(), 2)).unwrap();
             table.delete("k1".into()).unwrap();
-            assert_eq!(table.len(), 1);
+
+            // Expect tombstone for k1
+            assert_eq!(table.len(), 2);
         }
 
-        let table2 =
-            MemTable::<Dummy, BinarySerializationEngine>::open_or_build(&path, &serializer)
-                .expect("Failed to create table");
+        let table = create_memtable(&path, &ser);
 
-        assert_eq!(table2.len(), 1);
-        assert!(table2.get(&"k2".into()).is_some());
-        assert!(table2.get(&"k1".into()).is_none());
+        assert_eq!(table.len(), 2);
+        assert!(table.get(&"k2".into()).unwrap().is_some());
+        assert!(table.get(&"k1".into()).unwrap().is_none());
     }
 }

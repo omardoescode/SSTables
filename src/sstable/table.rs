@@ -62,7 +62,7 @@ impl SSTable {
                 .write_all(&encoded)
                 .map_err(|err| SSTableError::LogWriteError { err })?;
         }
-        println!("");
+        println!();
 
         let index_file = File::create(index_path).map_err(|_| SSTableError::FileCreationError)?;
         let mut index_writer = BufWriter::new(index_file);
@@ -212,11 +212,14 @@ mod tests {
         fs::File,
         io::{BufRead, BufReader},
     };
+    use tempfile::TempDir;
     use uuid::Uuid;
 
     use crate::{
+        config::Config,
         memtable::{MemTable, MemTableRecord},
         serialization::BinarySerializationEngine,
+        sstable::SSTable,
     };
 
     use bincode::{Decode, Encode};
@@ -237,41 +240,51 @@ mod tests {
 
     #[test]
     fn create_ss_table() {
-        let file = File::open("resources/photos.txt").unwrap();
+        let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+        let file = File::open("resources/photos.txt").expect("Missing photos.txt");
         let reader = BufReader::new(file);
-        let path = format!("logs/{}.txt", Uuid::new_v4());
+
+        let log_path = temp_dir.path().join(format!("{}.log", Uuid::new_v4()));
+        let serializer = BinarySerializationEngine;
+
         let mut memtable = MemTable::<Photo, BinarySerializationEngine>::open_or_build(
-            &path,
-            &BinarySerializationEngine,
+            log_path.to_str().unwrap(),
+            &serializer,
         )
-        .unwrap();
+        .expect("Failed to open or build MemTable");
 
         for line in reader.lines() {
             let line = line.unwrap();
-            let values: Vec<&str> = line.split(" ").collect();
-
-            if values.len() != 3 {
-                panic!("Wrong value");
-            }
+            let values: Vec<&str> = line.split_whitespace().collect();
+            assert_eq!(values.len(), 3, "Invalid line in photos.txt");
 
             memtable
                 .insert(Photo {
-                    id: values[0].to_string().parse().unwrap(),
+                    id: values[0].parse().unwrap(),
                     url: values[1].to_string(),
                     thumbnail_url: values[2].to_string(),
                 })
                 .unwrap();
         }
 
-        let storage_path = "logs/sstable.txt";
-        let index_path = "logs/sstable_index.txt";
-        let ser = BinarySerializationEngine;
-        // SSTable::create::<Photo, BinarySerializationEngine, BinarySerializationEngine>(
-        //     storage_path,
-        //     index_path,
-        //     &memtable.tree,
-        //     &ser,
-        // )
-        // .unwrap();
+        let storage_path = temp_dir.path().join("sstable_data.txt");
+        let index_path = temp_dir.path().join("sstable_index.txt");
+
+        SSTable::create::<Photo, BinarySerializationEngine, BinarySerializationEngine>(
+            storage_path.to_str().unwrap(),
+            index_path.to_str().unwrap(),
+            &memtable.tree,
+            &serializer,
+            &Config {
+                index_key_string_size: 24,
+                index_offset_size: 8,
+                memtable_threshold: 1024,
+            },
+        )
+        .expect("Failed to create SSTable");
+
+        assert!(storage_path.exists(), "SSTable data file was not created");
+        assert!(index_path.exists(), "SSTable index file was not created");
     }
 }
