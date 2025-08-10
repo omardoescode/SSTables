@@ -2,17 +2,19 @@ mod error;
 
 use std::{
     fs::{File, OpenOptions, create_dir_all},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
-    path::Path,
+    io::{BufRead, BufReader, Result as IOResult, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
 };
 
 use crate::{
+    compaction::compact,
     config::Config,
     memtable::{LogOperation, MemTable, MemTableRecord},
     serialization::SerializationEngine,
     sstable::SSTable,
 };
 use error::EngineError;
+use tempfile::NamedTempFile;
 
 pub struct Engine<'a, T, S, SS>
 where
@@ -21,7 +23,6 @@ where
     SS: SerializationEngine<Option<T>>,
 {
     metadata: File,
-    db_path: &'a str,
     memtable: Box<MemTable<'a, T, S>>,
     sstables: Vec<SSTable>,
     config: &'a Config,
@@ -35,12 +36,11 @@ where
     SS: SerializationEngine<Option<T>>,
 {
     pub fn new(
-        db: &'a str,
         memtable_serializer: &'a S,
         storage_serializer: &'a SS,
         config: &'a Config,
     ) -> Result<Engine<'a, T, S, SS>, EngineError> {
-        let db_path = Path::new(db);
+        let db_path = Path::new(&config.db_path);
         if !db_path.exists() {
             return Err(EngineError::DBDoesntExist);
         }
@@ -62,13 +62,13 @@ where
         let memtable = Box::new(memtable);
 
         // Load all sstables
-        let metadata_path = db_path.join(format!("metadata/{}.meta", T::TYPE_NAME));
+        let metadata_path = Self::get_metadata_path(&config.db_path);
         let metadata = OpenOptions::new()
             .create(true)
             .read(true)
             .write(true)
             .truncate(false)
-            .open(metadata_path)
+            .open(&metadata_path)
             .unwrap(); // TODO: Fix this unwrap later
 
         let sstables = Self::read_sstables(&metadata);
@@ -79,7 +79,6 @@ where
             sstables,
             config,
             serializer: storage_serializer,
-            db_path: db,
         })
     }
 
@@ -99,6 +98,7 @@ where
         self.memtable
             .delete(key)
             .map_err(|err| EngineError::Deletion { err })?;
+        self.flush_if_ready();
         Ok(())
     }
 
@@ -120,28 +120,48 @@ where
         Ok(None)
     }
 
+    pub fn compact(&mut self) {
+        let compact_file_count = self
+            .config
+            .parallel_merging_file_count
+            .min(self.sstables.len());
+        println!("Compact File Count: {}", compact_file_count);
+        let to_compact = &self.sstables[0..compact_file_count];
+        let (index_file, storage_file) = self.get_next_index_storage_logs_name();
+        println!("{} {}", index_file, storage_file);
+
+        let table = compact(
+            to_compact,
+            self.serializer,
+            self.config,
+            index_file,
+            storage_file,
+        )
+        .unwrap();
+
+        let mut remaining = self.sstables.split_off(compact_file_count);
+
+        self.sstables.clear();
+        self.sstables.push(table);
+        self.sstables.append(&mut remaining);
+
+        self.recreate_metadata();
+    }
+
     fn flush_if_ready(&mut self) {
         let Config {
             index_offset_size,
             index_key_string_size,
-            memtable_threshold,
+            initial_index_file_threshold: memtable_threshold,
+            ..
         } = self.config;
+
         let pair_size = index_key_string_size + index_offset_size;
         if pair_size * self.memtable.len() < *memtable_threshold {
             return;
         }
 
-        let [storage_path, index_path] = ["storage", "indices"].map(|dir| {
-            Path::new(&self.db_path)
-                .join(format!(
-                    "{}/{}-{}.log",
-                    dir,
-                    T::TYPE_NAME,
-                    self.sstables.len()
-                ))
-                .display()
-                .to_string()
-        });
+        let (index_path, storage_path) = self.get_next_index_storage_logs_name();
 
         let table = SSTable::create::<T, S, SS>(
             &storage_path,
@@ -153,9 +173,8 @@ where
         .unwrap();
 
         self.add_sstable_to_metadata(&table);
-        self.sstables.push(table);
-
         self.memtable.clear();
+        self.sstables.push(table);
     }
 
     fn read_sstables(metadata_file: &File) -> Vec<SSTable> {
@@ -167,7 +186,7 @@ where
 
                 let values: Vec<&str> = line.split(" ").collect();
 
-                if values.len() != 5 {
+                if values.len() != 6 {
                     panic!("Invalid metadata");
                 }
 
@@ -176,7 +195,8 @@ where
                     index_path: values[1].to_string(),
                     min: values[2].to_string(),
                     max: values[3].to_string(),
-                    size: values[4].parse().unwrap(),
+                    count: values[4].parse().unwrap(),
+                    size: values[5].parse().unwrap(),
                 }
             })
             .collect()
@@ -186,15 +206,55 @@ where
         self.metadata.seek(SeekFrom::End(0));
         self.metadata.write_all(
             format!(
-                "{} {} {} {} {}\n",
+                "{} {} {} {} {} {}\n",
                 table.storage_path.clone(),
                 table.index_path.clone(),
                 table.min.clone(),
                 table.max.clone(),
+                table.count,
                 table.size
             )
             .as_bytes(),
         );
-        self.metadata.flush();
+    }
+
+    fn get_next_index_storage_logs_name(&self) -> (String, String) {
+        let [storage_path, index_path] = ["storage", "indices"].map(|dir| {
+            Path::new(&self.config.db_path)
+                .join(format!(
+                    "{}/{}-{}.log",
+                    dir,
+                    T::TYPE_NAME,
+                    self.sstables.len()
+                ))
+                .display()
+                .to_string()
+        });
+        (index_path, storage_path)
+    }
+
+    fn recreate_metadata(&self) -> IOResult<()> {
+        let mut temp_file = NamedTempFile::new_in(&self.config.db_path)?;
+        for table in self.sstables.iter() {
+            temp_file.write_all(
+                format!(
+                    "{} {} {} {} {} {}\n",
+                    table.storage_path.clone(),
+                    table.index_path.clone(),
+                    table.min.clone(),
+                    table.max.clone(),
+                    table.count,
+                    table.size
+                )
+                .as_bytes(),
+            );
+        }
+
+        temp_file.persist(Self::get_metadata_path(&self.config.db_path));
+        Ok(())
+    }
+
+    fn get_metadata_path(db_path: &str) -> PathBuf {
+        Path::new(db_path).join(format!("metadata/{}.meta", T::TYPE_NAME))
     }
 }

@@ -39,7 +39,6 @@ fn main() {
     let serializer = BinarySerializationEngine;
     let config = Config::from_file("config.yaml").unwrap();
     let mut engine = Engine::<Photo, BinarySerializationEngine, BinarySerializationEngine>::new(
-        "temp/db/",
         &serializer,
         &serializer,
         &config,
@@ -51,7 +50,7 @@ fn main() {
         let file = File::open("resources/photos.txt").unwrap();
         let reader = BufReader::new(file);
 
-        for line in reader.lines() {
+        for (i, line) in reader.lines().enumerate() {
             let line = line.unwrap();
             let values: Vec<&str> = line.split(" ").collect();
 
@@ -74,6 +73,7 @@ fn main() {
     }
 
     println!("Engine has {} in memory", engine.memtable_len());
+    engine.compact();
 
     for i in 1..5001 {
         let photo = engine.get(i.to_string()).unwrap();
@@ -84,6 +84,6 @@ fn main() {
         assert!(photo.is_some(), "loading {i} failed");
         let photo = photo.unwrap();
 
-        println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
+        // println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
     }
 }

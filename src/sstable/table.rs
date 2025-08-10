@@ -1,6 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Read, Result as IOResult, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -12,13 +12,21 @@ use crate::{
     serialization::SerializationEngine,
     sstable::error::SSTableError,
 };
-
+/// @definition: An implementation of sorted string tables. This struct is a reference to an
+/// immutable file on disk that has sorted records of the same schema
+/// @field index_path: A file that has an index on the primary keys in the immutable file
+/// @field storage_path: The path of the storage file #TODO: make relative to the database path
+/// @field min: The minimum key in this file. used for faster lookup
+/// @field max: The maximum key in this file. used for faster lookup
+/// @field size: The actual storage_file size. used for compaction
+/// @field count: the number of records in the sstable
 pub struct SSTable {
     pub storage_path: String,
     pub index_path: String,
     pub min: String,
     pub max: String,
     pub size: usize,
+    pub count: usize,
 }
 impl SSTable {
     pub fn create<'a, T, S, SS>(
@@ -50,19 +58,18 @@ impl SSTable {
         let max = tree.get_last().unwrap().0.clone();
 
         let mut writer = BufWriter::new(file);
-        println!("{storage_path}: ");
         for (key, value) in tree.iter() {
             indices.push((key.clone(), writer.stream_position().unwrap()));
             let encoded = serializer
                 .serialize(value.clone())
                 .map_err(|_| SSTableError::EncodingError)?;
 
-            print!(" {key}");
             writer
                 .write_all(&encoded)
                 .map_err(|err| SSTableError::LogWriteError { err })?;
         }
-        println!();
+        // writer.flush();
+        let size = writer.stream_position().unwrap() as usize;
 
         let index_file = File::create(index_path).map_err(|_| SSTableError::FileCreationError)?;
         let mut index_writer = BufWriter::new(index_file);
@@ -86,7 +93,8 @@ impl SSTable {
             index_path: index_path.to_string(),
             min,
             max,
-            size: tree.len(),
+            size,
+            count: tree.len(),
         })
     }
 
@@ -113,14 +121,14 @@ impl SSTable {
 
         // binary search
         let unit = config.index_key_string_size + config.index_offset_size;
-        if self.size % unit != 0 {
+
+        if self.count % unit != 0 {
             return Err(SSTableError::DBFileCorrupted {
                 file: self.index_path.clone(),
             });
         }
-        let count = self.size;
         let mut lo = 0;
-        let mut hi = count;
+        let mut hi = self.count;
         let mut reader = BufReader::new(index_file);
 
         while lo < hi {
@@ -153,7 +161,7 @@ impl SSTable {
 
         // After binary search, lo is the position where key should be
         // Check if we found the exact key
-        if lo < count {
+        if lo < self.size {
             let offset = (lo * unit) as u64;
             reader
                 .seek(SeekFrom::Start(offset))
@@ -277,9 +285,12 @@ mod tests {
             &memtable.tree,
             &serializer,
             &Config {
+                same_size_before_compaction_threshold: 3,
                 index_key_string_size: 24,
                 index_offset_size: 8,
-                memtable_threshold: 1024,
+                initial_index_file_threshold: 1024,
+                parallel_merging_file_count: 2,
+                db_path: "temp/db".to_string(),
             },
         )
         .expect("Failed to create SSTable");

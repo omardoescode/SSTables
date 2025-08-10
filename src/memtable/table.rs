@@ -79,10 +79,6 @@ where
     pub fn delete(&mut self, key: String) -> IOResult<()> {
         self.tree.remove(&key); // remove any previous values
         self.tree.insert(key.clone(), None);
-        println!(
-            "{key} is being deleted. New min is {}",
-            self.tree.get_first().unwrap().0
-        );
         self.log
             .append(LogOperation::<T>::Delete { key }, self.serializer)?;
         Ok(())
