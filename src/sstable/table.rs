@@ -1,6 +1,6 @@
 use std::{
     fs::{File, OpenOptions},
-    io::{BufReader, BufWriter, Read, Result as IOResult, Seek, SeekFrom, Write},
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::Path,
 };
 
@@ -115,7 +115,7 @@ impl SSTable {
         let index_file = OpenOptions::new()
             .read(true)
             .open(self.index_path.clone())
-            .map_err(|err| SSTableError::DBFileDeleted {
+            .map_err(|_| SSTableError::DBFileDeleted {
                 file: self.index_path.clone(),
             })?;
 

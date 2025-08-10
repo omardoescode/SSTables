@@ -84,6 +84,6 @@ fn main() {
         assert!(photo.is_some(), "loading {i} failed");
         let photo = photo.unwrap();
 
-        // println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
+        println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
     }
 }

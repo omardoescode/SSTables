@@ -1,15 +1,12 @@
 use std::{
-    cmp::{Ordering, Reverse},
+    cmp::Reverse,
     collections::BinaryHeap,
     fs::OpenOptions,
-    io::{BufReader, Read, Result as IOResult, Seek, SeekFrom, Write},
-    path::Path,
+    io::{BufReader, Read, Result as IOResult, Seek, Write},
 };
 
 use crate::{config::Config, serialization::SerializationEngine, sstable::SSTable};
 use tempfile::NamedTempFile;
-
-struct Compaction;
 
 #[derive(Ord, PartialOrd, Eq, PartialEq)]
 struct Entry {
@@ -102,7 +99,7 @@ where
                 heap.push(Reverse(Entry::new(key, reader)));
             }
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
-            Err(e) => return Err(e.into()),
+            Err(e) => return Err(e),
         }
         // Skip the offset values
         index_reader
