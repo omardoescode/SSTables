@@ -8,18 +8,6 @@ use SSTables::{
     serialization::BinarySerializationEngine,
 };
 use bincode::{Decode, Encode};
-#[derive(Encode, Decode, Clone)]
-struct User {
-    username: String,
-    password: String,
-}
-
-impl MemTableRecord for User {
-    const TYPE_NAME: &'static str = "User";
-    fn get_key(&self) -> String {
-        self.username.clone()
-    }
-}
 
 #[derive(Encode, Decode, Clone)]
 struct Photo {
@@ -50,7 +38,7 @@ fn main() {
         let file = File::open("resources/photos.txt").unwrap();
         let reader = BufReader::new(file);
 
-        for (i, line) in reader.lines().enumerate() {
+        for (_, line) in reader.lines().enumerate() {
             let line = line.unwrap();
             let values: Vec<&str> = line.split(" ").collect();
 
@@ -67,23 +55,25 @@ fn main() {
                 .unwrap();
         }
 
-        engine.delete("1000".to_string());
-        engine.delete("50".to_string());
-        engine.delete("5000".to_string());
+        engine.delete("1000".to_string()).unwrap();
+        engine.delete("50".to_string()).unwrap();
+        engine.delete("5000".to_string()).unwrap();
     }
 
     println!("Engine has {} in memory", engine.memtable_len());
-    engine.compact();
 
-    for i in 1..5001 {
-        let photo = engine.get(i.to_string()).unwrap();
-        if i == 1000 || i == 50 || i == 5000 {
-            assert!(photo.is_none(), "{i} still exists");
-            continue;
+    loop {
+        engine.compact();
+        for i in 1..5001 {
+            let photo = engine.get(i.to_string()).unwrap();
+            if i == 1000 || i == 50 || i == 5000 {
+                assert!(photo.is_none(), "{i} still exists");
+                continue;
+            }
+            assert!(photo.is_some(), "loading {i} failed");
+            let photo = photo.unwrap();
+
+            // println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
         }
-        assert!(photo.is_some(), "loading {i} failed");
-        let photo = photo.unwrap();
-
-        println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
     }
 }

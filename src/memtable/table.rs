@@ -105,8 +105,8 @@ where
     }
 
     pub fn clear(&mut self) -> IOResult<()> {
-        self.tree.clear();
         self.log.clear()?;
+        self.tree.clear();
         Ok(())
     }
 }

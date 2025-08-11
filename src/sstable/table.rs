@@ -12,6 +12,7 @@ use crate::{
     serialization::SerializationEngine,
     sstable::error::SSTableError,
 };
+
 /// @definition: An implementation of sorted string tables. This struct is a reference to an
 /// immutable file on disk that has sorted records of the same schema
 /// @field index_path: A file that has an index on the primary keys in the immutable file

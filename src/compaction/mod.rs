@@ -30,6 +30,9 @@ pub fn compact<T, SS>(
 where
     SS: SerializationEngine<Option<T>>,
 {
+    if tables.is_empty() {
+        panic!("There must be a number of tables");
+    }
     let mut readers: Vec<(BufReader<_>, BufReader<_>)> = tables
         .iter()
         .map(|table| {
@@ -130,4 +133,103 @@ where
         min,
         max,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        config::Config, engine::Engine, memtable::MemTableRecord,
+        serialization::BinarySerializationEngine, sstable,
+    };
+    use bincode::{Decode, Encode};
+    use tempfile::TempDir;
+
+    #[derive(Encode, Decode, Clone, Debug, PartialEq)]
+    struct Photo {
+        id: String,
+        url: String,
+        thumbnail_url: String,
+    }
+
+    impl MemTableRecord for Photo {
+        const TYPE_NAME: &'static str = "Photo";
+        fn get_key(&self) -> String {
+            self.id.clone()
+        }
+    }
+
+    #[test]
+    fn test_engine_compaction_with_tempdir() {
+        // Create a temp directory, will be deleted after test
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create config manually (adjust fields and types if needed)
+        let config = Config {
+            db_path: temp_dir.path().to_str().unwrap().to_string(),
+            index_key_string_size: 24,
+            index_offset_size: 8,
+            initial_index_file_threshold: 1024,
+            parallel_merging_file_count: 2,
+            same_size_before_compaction_threshold: 2,
+        };
+
+        let serializer = BinarySerializationEngine;
+
+        let mut engine =
+            Engine::<Photo, BinarySerializationEngine, BinarySerializationEngine>::new(
+                &serializer,
+                &serializer,
+                &config,
+            )
+            .expect("Engine creation failed");
+
+        // Inline small sample dataset instead of file
+        let all_range = 1..1000;
+        let all_range: Vec<_> = all_range.collect();
+        let sample_photos = all_range.iter().map(|i| Photo {
+            id: format!("id_{}", i.to_string()),
+            url: format!("url_{}", i.to_string()),
+            thumbnail_url: format!("thumb_{}", i.to_string()),
+        });
+
+        for photo in sample_photos {
+            engine.insert(photo).expect("Insert failed");
+        }
+
+        println!("There are {} sstables", engine.sstable_len());
+        // Delete specific keys
+        let mapper = |i: &i32| format!("id_{}", i.to_string());
+        let deleted: Vec<_> = [1, 2, 3, 4].iter().map(mapper).collect();
+        let present: Vec<_> = all_range
+            .iter()
+            .map(mapper)
+            .filter(|key| !deleted.contains(key))
+            .collect();
+
+        for key in deleted.iter() {
+            engine.delete(key.clone()).expect("Deletion failed");
+        }
+
+        // Run compaction multiple times to test stability
+        for _ in 0..10 {
+            engine.compact();
+            println!(
+                "Compaction is done. There are {} sstables",
+                engine.sstable_len()
+            );
+        }
+
+        // Verify data integrity after compaction
+        for key in present {
+            let photo = engine.get(key.to_string()).expect("Get failed");
+            assert!(photo.is_some(), "Expected key {} to exist", key);
+        }
+
+        for key in deleted {
+            let photo = engine.get(key.to_string()).expect("Get failed");
+            assert!(photo.is_none(), "Expected key {} to be deleted", key);
+        }
+
+        // TempDir is cleaned automatically here
+    }
 }

@@ -1,7 +1,7 @@
 mod error;
 
 use std::{
-    fs::{File, OpenOptions, create_dir_all},
+    fs::{self, File, OpenOptions, create_dir_all},
     io::{BufRead, BufReader, Result as IOResult, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
@@ -85,6 +85,9 @@ where
     pub fn memtable_len(&self) -> usize {
         self.memtable.len()
     }
+    pub fn sstable_len(&self) -> usize {
+        self.sstables.len()
+    }
 
     pub fn insert(&mut self, record: T) -> Result<(), EngineError> {
         self.memtable
@@ -126,6 +129,7 @@ where
             .parallel_merging_file_count
             .min(self.sstables.len());
         println!("Compact File Count: {}", compact_file_count);
+
         let to_compact = &self.sstables[0..compact_file_count];
         let (index_file, storage_file) = self.get_next_index_storage_logs_name();
         println!("{} {}", index_file, storage_file);
@@ -134,8 +138,8 @@ where
             to_compact,
             self.serializer,
             self.config,
-            index_file,
             storage_file,
+            index_file,
         )
         .unwrap();
 
@@ -145,7 +149,7 @@ where
         self.sstables.push(table);
         self.sstables.append(&mut remaining);
 
-        self.recreate_metadata();
+        self.recreate_metadata().unwrap();
     }
 
     fn flush_if_ready(&mut self) {
@@ -173,7 +177,7 @@ where
         .unwrap();
 
         self.add_sstable_to_metadata(&table);
-        self.memtable.clear();
+        self.memtable.clear().unwrap();
         self.sstables.push(table);
     }
 
@@ -219,14 +223,12 @@ where
     }
 
     fn get_next_index_storage_logs_name(&self) -> (String, String) {
+        let count = fs::read_dir(Path::new(&self.config.db_path).join("storage"))
+            .unwrap()
+            .count();
         let [storage_path, index_path] = ["storage", "indices"].map(|dir| {
             Path::new(&self.config.db_path)
-                .join(format!(
-                    "{}/{}-{}.log",
-                    dir,
-                    T::TYPE_NAME,
-                    self.sstables.len()
-                ))
+                .join(format!("{}/{}-{}.log", dir, T::TYPE_NAME, count))
                 .display()
                 .to_string()
         });
@@ -247,10 +249,10 @@ where
                     table.size
                 )
                 .as_bytes(),
-            );
+            )?;
         }
 
-        temp_file.persist(Self::get_metadata_path(&self.config.db_path));
+        temp_file.persist(Self::get_metadata_path(&self.config.db_path))?;
         Ok(())
     }
 
