@@ -1,6 +1,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    ops::Deref,
     path::Path,
 };
 
@@ -13,10 +14,11 @@ use crate::{
     sstable::error::SSTableError,
 };
 
+/// SSTable
 /// @definition: An implementation of sorted string tables. This struct is a reference to an
 /// immutable file on disk that has sorted records of the same schema
 /// @field index_path: A file that has an index on the primary keys in the immutable file
-/// @field storage_path: The path of the storage file #TODO: make relative to the database path
+/// @field storage_path: The path of the storage file
 /// @field min: The minimum key in this file. used for faster lookup
 /// @field max: The maximum key in this file. used for faster lookup
 /// @field size: The actual storage_file size. used for compaction
@@ -33,7 +35,7 @@ impl SSTable {
     pub fn create<'a, T, S, SS>(
         storage_path: &'a str,
         index_path: &'a str,
-        tree: &RBTree<String, Option<T>>,
+        tree: impl Deref<Target = RBTree<String, Option<T>>>,
         serializer: &SS,
         config: &Config,
     ) -> Result<SSTable, SSTableError>
@@ -283,7 +285,7 @@ mod tests {
         SSTable::create::<Photo, BinarySerializationEngine, BinarySerializationEngine>(
             storage_path.to_str().unwrap(),
             index_path.to_str().unwrap(),
-            &memtable.tree,
+            memtable.tree.read().unwrap(),
             &serializer,
             &Config {
                 same_size_before_compaction_threshold: 3,

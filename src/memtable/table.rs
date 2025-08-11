@@ -1,7 +1,7 @@
 use rbtree::RBTree;
-use std::fs::OpenOptions;
 use std::io::Result as IOResult;
-use std::path::Path;
+use std::sync::RwLock;
+use std::{fs::OpenOptions, sync::Arc};
 
 use crate::{memtable::MemTableRecord, serialization::SerializationEngine};
 
@@ -12,7 +12,7 @@ where
     T: MemTableRecord,
     S: SerializationEngine<LogOperation<T>>,
 {
-    pub tree: RBTree<String, Option<T>>,
+    pub tree: Arc<RwLock<RBTree<String, Option<T>>>>,
     pub log: MemTableLog,
     pub serializer: &'a S,
 }
@@ -25,20 +25,7 @@ where
     pub fn open_or_build(path: &str, serializer: &'a S) -> IOResult<Self> {
         let mut options = OpenOptions::new();
         options.create(true).append(true).read(true);
-        if Path::new(path).exists() {
-            Self::build_from(path, &mut options, serializer)
-        } else {
-            // File does not exist → create new table
-            let file = options.open(path)?;
-            Ok(Self {
-                tree: RBTree::new(),
-                log: MemTableLog::new(file),
-                serializer,
-            })
-        }
-    }
 
-    fn build_from(path: &str, options: &mut OpenOptions, serializer: &'a S) -> IOResult<Self> {
         let mut reader = MemTableLogReader::open(options.open(path)?)?;
         let mut tree = RBTree::<String, Option<T>>::new();
 
@@ -56,6 +43,7 @@ where
             }
         }
 
+        let tree = Arc::new(RwLock::new(tree));
         Ok(MemTable {
             tree,
             log: MemTableLog::new(options.open(path)?),
@@ -71,43 +59,49 @@ where
             },
             self.serializer,
         )?;
-        self.tree.remove(&key); // remove any previous values
-        self.tree.insert(key, Some(record));
+        let mut tree = self.tree.write().unwrap();
+        tree.remove(&key); // remove any previous values
+        tree.insert(key, Some(record));
         Ok(())
     }
 
     pub fn delete(&mut self, key: String) -> IOResult<()> {
-        self.tree.remove(&key); // remove any previous values
-        self.tree.insert(key.clone(), None);
+        let mut tree = self.tree.write().unwrap();
+        tree.remove(&key); // remove any previous values
+        tree.insert(key.clone(), None);
         self.log
             .append(LogOperation::<T>::Delete { key }, self.serializer)?;
         Ok(())
     }
 
-    pub fn get(&self, key: &String) -> Option<&Option<T>> {
-        self.tree.get(key)
+    pub fn get(&self, key: &String) -> Option<Option<T>> {
+        let tree = self.tree.read().unwrap();
+        tree.get(key).cloned()
     }
 
     pub fn len(&self) -> usize {
-        self.tree.len()
+        let tree = self.tree.read().unwrap();
+        tree.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.tree.is_empty()
-    }
-
-    pub fn iter(&self) -> rbtree::Iter<String, Option<T>> {
-        self.tree.iter()
-    }
-
-    pub fn iter_mut(&mut self) -> rbtree::IterMut<String, Option<T>> {
-        self.tree.iter_mut()
+        let tree = self.tree.read().unwrap();
+        tree.is_empty()
     }
 
     pub fn clear(&mut self) -> IOResult<()> {
         self.log.clear()?;
-        self.tree.clear();
+        self.tree.write().unwrap().clear();
         Ok(())
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (String, Option<T>)> {
+        let tree = self.tree.read().unwrap();
+        // Snapshot into Vec to avoid holding the lock during iteration
+        tree.iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 }
 
@@ -140,7 +134,7 @@ mod tests {
         path: &str,
         serializer: &'a BinarySerializationEngine,
     ) -> MemTable<'a, Dummy, BinarySerializationEngine> {
-        MemTable::<Dummy, BinarySerializationEngine>::open_or_build(path, &serializer)
+        MemTable::<Dummy, BinarySerializationEngine>::open_or_build(path, serializer)
             .expect("Failed to create MemTable")
     }
 

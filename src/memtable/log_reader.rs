@@ -6,7 +6,7 @@ use std::fs::File;
 use std::io::{BufReader, Error, Read, Result as IOResult};
 
 pub struct MemTableLogReader<R: Read> {
-    pub(crate) reader: BufReader<R>,
+    pub reader: BufReader<R>,
 }
 
 impl MemTableLogReader<File> {

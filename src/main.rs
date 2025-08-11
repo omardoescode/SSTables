@@ -34,11 +34,11 @@ fn main() {
     .unwrap();
 
     // Seed if empty
-    if engine.memtable_len() == 0 {
+    if engine.memtable_len() == 0 && engine.sstable_len() == 0 {
         let file = File::open("resources/photos.txt").unwrap();
         let reader = BufReader::new(file);
 
-        for (_, line) in reader.lines().enumerate() {
+        for line in reader.lines() {
             let line = line.unwrap();
             let values: Vec<&str> = line.split(" ").collect();
 
@@ -62,7 +62,7 @@ fn main() {
 
     println!("Engine has {} in memory", engine.memtable_len());
 
-    loop {
+    while engine.sstable_len() != 1 {
         engine.compact();
         for i in 1..5001 {
             let photo = engine.get(i.to_string()).unwrap();

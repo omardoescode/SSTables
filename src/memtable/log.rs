@@ -4,14 +4,17 @@ use crate::serialization::SerializationEngine;
 use super::operation::LogOperation;
 use std::fs::File;
 use std::io::{Error, ErrorKind, Result as IOResult, Seek, SeekFrom, Write};
+use std::sync::{Arc, Mutex};
 
 pub struct MemTableLog {
-    pub file: File,
+    pub file: Arc<Mutex<File>>,
 }
 
 impl MemTableLog {
     pub fn new(file: File) -> Self {
-        MemTableLog { file }
+        MemTableLog {
+            file: Arc::new(Mutex::new(file)),
+        }
     }
 
     pub fn append<T, S>(&mut self, opt: LogOperation<T>, serializer: &S) -> IOResult<()>
@@ -22,15 +25,17 @@ impl MemTableLog {
         let Ok(decoded) = serializer.serialize(opt) else {
             return Err(Error::new(ErrorKind::InvalidInput, "Failed to encode data"));
         };
-        self.file.write_all(&decoded)?;
-        self.file.flush()?;
+        let mut file = self.file.lock().unwrap();
+        file.write_all(&decoded)?;
+        file.flush()?;
         Ok(())
     }
 
     pub fn clear(&mut self) -> IOResult<()> {
-        self.file.set_len(0)?;
-        self.file.seek(SeekFrom::Start(0))?;
-        self.file.flush()?;
+        let mut file = self.file.lock().unwrap();
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.flush()?;
         Ok(())
     }
 }

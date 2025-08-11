@@ -128,7 +128,10 @@ where
             .config
             .parallel_merging_file_count
             .min(self.sstables.len());
-        println!("Compact File Count: {}", compact_file_count);
+
+        if compact_file_count < 2 {
+            return;
+        }
 
         let to_compact = &self.sstables[0..compact_file_count];
         let (index_file, storage_file) = self.get_next_index_storage_logs_name();
@@ -166,11 +169,12 @@ where
         }
 
         let (index_path, storage_path) = self.get_next_index_storage_logs_name();
+        let tree = self.memtable.tree.read().unwrap();
 
         let table = SSTable::create::<T, S, SS>(
             &storage_path,
             &index_path,
-            &self.memtable.tree,
+            tree,
             self.serializer,
             self.config,
         )
@@ -207,19 +211,21 @@ where
     }
 
     fn add_sstable_to_metadata(&mut self, table: &SSTable) {
-        self.metadata.seek(SeekFrom::End(0));
-        self.metadata.write_all(
-            format!(
-                "{} {} {} {} {} {}\n",
-                table.storage_path.clone(),
-                table.index_path.clone(),
-                table.min.clone(),
-                table.max.clone(),
-                table.count,
-                table.size
+        self.metadata.seek(SeekFrom::End(0)).unwrap();
+        self.metadata
+            .write_all(
+                format!(
+                    "{} {} {} {} {} {}\n",
+                    table.storage_path.clone(),
+                    table.index_path.clone(),
+                    table.min.clone(),
+                    table.max.clone(),
+                    table.count,
+                    table.size
+                )
+                .as_bytes(),
             )
-            .as_bytes(),
-        );
+            .unwrap();
     }
 
     fn get_next_index_storage_logs_name(&self) -> (String, String) {
