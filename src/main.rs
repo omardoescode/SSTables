@@ -9,7 +9,7 @@ use SSTables::{
 };
 use bincode::{Decode, Encode};
 
-#[derive(Encode, Decode, Clone)]
+#[derive(Encode, Decode, Clone, Debug)]
 struct Photo {
     id: i32,
     url: String,
@@ -34,7 +34,7 @@ fn main() {
     .unwrap();
 
     // Seed if empty
-    if engine.count() == 0 {
+    if true {
         let file = File::open("resources/photos.txt").unwrap();
         let reader = BufReader::new(file);
 
@@ -60,9 +60,9 @@ fn main() {
         engine.delete("5000".to_string()).unwrap();
     }
 
-    println!("Engine has {} records", engine.count());
-
-    engine.compact();
+    for _ in 0..5 {
+        engine.compact();
+    }
     for i in 1..5001 {
         let photo = engine.get(i.to_string()).unwrap();
         if i == 1000 || i == 50 || i == 5000 {
@@ -70,8 +70,5 @@ fn main() {
             continue;
         }
         assert!(photo.is_some(), "loading {i} failed");
-        let photo = photo.unwrap();
-
-        println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
     }
 }

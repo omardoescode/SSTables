@@ -1,4 +1,5 @@
 use std::{
+    fmt::Debug,
     fs::{File, OpenOptions},
     io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     ops::Deref,
@@ -22,7 +23,7 @@ use crate::{
 /// @field min: The minimum key in this file. used for faster lookup
 /// @field max: The maximum key in this file. used for faster lookup
 /// @field size: The actual storage_file size. used for compaction
-/// @field count: the number of records in the sstable
+/// @field count: the number of records in the sstable. This doens't include the tombstones
 pub struct SSTable {
     pub storage_path: String,
     pub index_path: String,
@@ -40,7 +41,7 @@ impl SSTable {
         config: &Config,
     ) -> Result<SSTable, SSTableError>
     where
-        T: MemTableRecord,
+        T: MemTableRecord + Debug,
         S: SerializationEngine<LogOperation<T>>,
         SS: SerializationEngine<Option<T>>,
     {
@@ -67,6 +68,7 @@ impl SSTable {
                 .serialize(value.clone())
                 .map_err(|_| SSTableError::EncodingError)?;
 
+            println!("{} {:?}", key, value);
             writer
                 .write_all(&encoded)
                 .map_err(|err| SSTableError::LogWriteError { err })?;
@@ -91,13 +93,18 @@ impl SSTable {
                 .map_err(|err| SSTableError::LogWriteError { err })?;
         }
 
+        // The count avoids tombstones
+        let count = tree
+            .iter()
+            .fold(0, |a, (_, value)| if value.is_some() { 1 + a } else { a });
+
         Ok(SSTable {
             storage_path: storage_path.to_string(),
             index_path: index_path.to_string(),
             min,
             max,
             size,
-            count: tree.len(),
+            count,
         })
     }
 
@@ -124,12 +131,6 @@ impl SSTable {
 
         // binary search
         let unit = config.index_key_string_size + config.index_offset_size;
-
-        if self.count % unit != 0 {
-            return Err(SSTableError::DBFileCorrupted {
-                file: self.index_path.clone(),
-            });
-        }
         let mut lo = 0;
         let mut hi = self.count;
         let mut reader = BufReader::new(index_file);
@@ -235,7 +236,7 @@ mod tests {
 
     use bincode::{Decode, Encode};
 
-    #[derive(Encode, Decode, Clone)]
+    #[derive(Encode, Decode, Clone, Debug)]
     struct Photo {
         id: i32,
         url: String,

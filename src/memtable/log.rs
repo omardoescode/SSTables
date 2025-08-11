@@ -17,7 +17,7 @@ impl MemTableLog {
         }
     }
 
-    pub fn append<T, S>(&mut self, opt: LogOperation<T>, serializer: &S) -> IOResult<()>
+    pub fn append<T, S>(&self, opt: LogOperation<T>, serializer: &S) -> IOResult<()>
     where
         T: MemTableRecord,
         S: SerializationEngine<LogOperation<T>>,
@@ -31,7 +31,7 @@ impl MemTableLog {
         Ok(())
     }
 
-    pub fn clear(&mut self) -> IOResult<()> {
+    pub fn clear(&self) -> IOResult<()> {
         let mut file = self.file.lock().unwrap();
         file.set_len(0)?;
         file.seek(SeekFrom::Start(0))?;

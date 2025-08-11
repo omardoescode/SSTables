@@ -51,7 +51,7 @@ where
         })
     }
 
-    pub fn insert(&mut self, record: T) -> IOResult<()> {
+    pub fn insert(&self, record: T) -> IOResult<()> {
         let key = record.get_key();
         self.log.append(
             LogOperation::Insert {
@@ -65,7 +65,7 @@ where
         Ok(())
     }
 
-    pub fn delete(&mut self, key: String) -> IOResult<()> {
+    pub fn delete(&self, key: String) -> IOResult<()> {
         let mut tree = self.tree.write().unwrap();
         tree.remove(&key); // remove any previous values
         tree.insert(key.clone(), None);
@@ -89,7 +89,7 @@ where
         tree.is_empty()
     }
 
-    pub fn clear(&mut self) -> IOResult<()> {
+    pub fn clear(&self) -> IOResult<()> {
         self.log.clear()?;
         self.tree.write().unwrap().clear();
         Ok(())
@@ -152,7 +152,7 @@ mod tests {
     fn no_repetitive_items() {
         let ser = BinarySerializationEngine;
         let path = new_temp_path();
-        let mut table = create_memtable(&path, &ser);
+        let table = create_memtable(&path, &ser);
 
         table.insert(Dummy("hello".to_string(), 10)).unwrap();
         table.insert(Dummy("hello".to_string(), 20)).unwrap();
@@ -168,7 +168,7 @@ mod tests {
     fn roundtrip_get() {
         let ser = BinarySerializationEngine;
         let path = new_temp_path();
-        let mut table = create_memtable(&path, &ser);
+        let table = create_memtable(&path, &ser);
 
         table.insert(Dummy("hello".to_string(), 10)).unwrap();
 
@@ -181,7 +181,7 @@ mod tests {
     fn deletion_marks_none() {
         let ser = BinarySerializationEngine;
         let path = new_temp_path();
-        let mut table = create_memtable(&path, &ser);
+        let table = create_memtable(&path, &ser);
 
         table.insert(Dummy("hello".to_string(), 1)).unwrap();
         assert_eq!(table.len(), 1);
@@ -198,7 +198,7 @@ mod tests {
     fn iterates_in_order() {
         let ser = BinarySerializationEngine;
         let path = new_temp_path();
-        let mut table = create_memtable(&path, &ser);
+        let table = create_memtable(&path, &ser);
 
         table.insert(Dummy("b".into(), 10)).unwrap();
         table.insert(Dummy("a".into(), 20)).unwrap();
@@ -214,7 +214,7 @@ mod tests {
         let path = new_temp_path();
 
         {
-            let mut table = create_memtable(&path, &ser);
+            let table = create_memtable(&path, &ser);
             table.insert(Dummy("k1".into(), 1)).unwrap();
             table.insert(Dummy("k2".into(), 2)).unwrap();
             table.delete("k1".into()).unwrap();

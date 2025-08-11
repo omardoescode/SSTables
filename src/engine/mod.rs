@@ -1,10 +1,11 @@
 mod error;
 
 use std::{
+    fmt::Debug,
     fs::{self, File, OpenOptions, create_dir_all},
     io::{BufRead, BufReader, Result as IOResult, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
 };
 
 use crate::{
@@ -28,12 +29,12 @@ where
     sstables: Arc<RwLock<Vec<SSTable>>>,
     config: &'a Config,
     serializer: &'a SS,
-    count: usize,
+    flushing: AtomicBool, // TODO: Use this field in flush_if_ready
 }
 
 impl<'a, T, S, SS> Engine<'a, T, S, SS>
 where
-    T: MemTableRecord,
+    T: MemTableRecord + Debug,
     S: SerializationEngine<LogOperation<T>>,
     SS: SerializationEngine<Option<T>>,
 {
@@ -71,7 +72,6 @@ where
             .open(&metadata_path)
             .unwrap(); // TODO: Fix this unwrap later
         let sstables = Self::read_sstables(&metadata);
-        let count = sstables.iter().fold(0, |a, b| a + b.count) + memtable.len();
         let metadata = Arc::new(Mutex::new(metadata));
         let sstables = Arc::new(RwLock::new(sstables));
 
@@ -81,14 +81,11 @@ where
             sstables,
             config,
             serializer: storage_serializer,
-            count,
+            flushing: AtomicBool::new(false),
         })
     }
 
-    pub fn count(&self) -> usize {
-        self.count
-    }
-    pub fn insert(&mut self, record: T) -> Result<(), EngineError> {
+    pub fn insert(&self, record: T) -> Result<(), EngineError> {
         self.memtable
             .insert(record)
             .map_err(|err| EngineError::Insertion { err })?;
@@ -96,7 +93,7 @@ where
         Ok(())
     }
 
-    pub fn delete(&mut self, key: String) -> Result<(), EngineError> {
+    pub fn delete(&self, key: String) -> Result<(), EngineError> {
         self.memtable
             .delete(key)
             .map_err(|err| EngineError::Deletion { err })?;
@@ -104,7 +101,7 @@ where
         Ok(())
     }
 
-    pub fn get(&mut self, key: String) -> Result<Option<T>, EngineError> {
+    pub fn get(&self, key: String) -> Result<Option<T>, EngineError> {
         let memlookup = self.memtable.get(&key);
         if let Some(value) = memlookup {
             return Ok(value.clone());
@@ -123,7 +120,7 @@ where
         Ok(None)
     }
 
-    pub fn compact(&mut self) {
+    pub fn compact(&self) {
         let (table, compact_file_count) = {
             let tables = self.sstables.read().unwrap();
             let compact_file_count = self.config.parallel_merging_file_count.min(tables.len());
@@ -157,7 +154,7 @@ where
         self.create_metadata(tables.iter()).unwrap();
     }
 
-    fn flush_if_ready(&mut self) {
+    fn flush_if_ready(&self) {
         let Config {
             index_offset_size,
             index_key_string_size,
@@ -169,15 +166,14 @@ where
         if pair_size * self.memtable.len() < *memtable_threshold {
             return;
         }
-        println!("Flushing Memtable begins");
 
+        println!("Flushing Memtable begins");
         let (index_path, storage_path) = self.get_next_index_storage_logs_name();
-        let tree = self.memtable.tree.read().unwrap();
 
         let table = SSTable::create::<T, S, SS>(
             &storage_path,
             &index_path,
-            tree,
+            self.memtable.tree.read().unwrap(),
             self.serializer,
             self.config,
         )
@@ -217,7 +213,7 @@ where
             .collect()
     }
 
-    fn add_sstable_to_metadata(&mut self, table: &SSTable) {
+    fn add_sstable_to_metadata(&self, table: &SSTable) {
         let mut metadata = self.metadata.lock().unwrap();
         metadata.seek(SeekFrom::End(0)).unwrap();
         metadata
@@ -266,6 +262,7 @@ where
             )?;
         }
 
+        let _guard = self.metadata.lock().unwrap(); // lock the metadata first, before changing the file
         temp_file.persist(Self::get_metadata_path(&self.config.db_path))?;
         Ok(())
     }

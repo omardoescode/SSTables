@@ -139,7 +139,7 @@ where
 mod tests {
     use crate::{
         config::Config, engine::Engine, memtable::MemTableRecord,
-        serialization::BinarySerializationEngine, sstable,
+        serialization::BinarySerializationEngine,
     };
     use bincode::{Decode, Encode};
     use tempfile::TempDir;
@@ -187,9 +187,9 @@ mod tests {
         let all_range = 1..1000;
         let all_range: Vec<_> = all_range.collect();
         let sample_photos = all_range.iter().map(|i| Photo {
-            id: format!("id_{}", i.to_string()),
-            url: format!("url_{}", i.to_string()),
-            thumbnail_url: format!("thumb_{}", i.to_string()),
+            id: format!("id_{}", i),
+            url: format!("url_{}", i),
+            thumbnail_url: format!("thumb_{}", i),
         });
 
         for photo in sample_photos {
@@ -197,7 +197,7 @@ mod tests {
         }
 
         // Delete specific keys
-        let mapper = |i: &i32| format!("id_{}", i.to_string());
+        let mapper = |i: &i32| format!("id_{}", i);
         let deleted: Vec<_> = [1, 2, 3, 4].iter().map(mapper).collect();
         let present: Vec<_> = all_range
             .iter()
