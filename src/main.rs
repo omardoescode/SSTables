@@ -34,7 +34,7 @@ fn main() {
     .unwrap();
 
     // Seed if empty
-    if engine.memtable_len() == 0 && engine.sstable_len() == 0 {
+    if engine.count() == 0 {
         let file = File::open("resources/photos.txt").unwrap();
         let reader = BufReader::new(file);
 
@@ -60,20 +60,18 @@ fn main() {
         engine.delete("5000".to_string()).unwrap();
     }
 
-    println!("Engine has {} in memory", engine.memtable_len());
+    println!("Engine has {} records", engine.count());
 
-    while engine.sstable_len() != 1 {
-        engine.compact();
-        for i in 1..5001 {
-            let photo = engine.get(i.to_string()).unwrap();
-            if i == 1000 || i == 50 || i == 5000 {
-                assert!(photo.is_none(), "{i} still exists");
-                continue;
-            }
-            assert!(photo.is_some(), "loading {i} failed");
-            let photo = photo.unwrap();
-
-            // println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
+    engine.compact();
+    for i in 1..5001 {
+        let photo = engine.get(i.to_string()).unwrap();
+        if i == 1000 || i == 50 || i == 5000 {
+            assert!(photo.is_none(), "{i} still exists");
+            continue;
         }
+        assert!(photo.is_some(), "loading {i} failed");
+        let photo = photo.unwrap();
+
+        println!("{} - {} - {}", photo.id, photo.url, photo.thumbnail_url);
     }
 }

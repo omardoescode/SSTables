@@ -4,6 +4,7 @@ use std::{
     fs::{self, File, OpenOptions, create_dir_all},
     io::{BufRead, BufReader, Result as IOResult, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::{
@@ -22,11 +23,12 @@ where
     S: SerializationEngine<LogOperation<T>>,
     SS: SerializationEngine<Option<T>>,
 {
-    metadata: File,
-    memtable: Box<MemTable<'a, T, S>>,
-    sstables: Vec<SSTable>,
+    metadata: Arc<Mutex<File>>,
+    memtable: MemTable<'a, T, S>,
+    sstables: Arc<RwLock<Vec<SSTable>>>,
     config: &'a Config,
     serializer: &'a SS,
+    count: usize,
 }
 
 impl<'a, T, S, SS> Engine<'a, T, S, SS>
@@ -59,8 +61,6 @@ where
         )
         .map_err(|err| EngineError::MemtableInitialization { err })?;
 
-        let memtable = Box::new(memtable);
-
         // Load all sstables
         let metadata_path = Self::get_metadata_path(&config.db_path);
         let metadata = OpenOptions::new()
@@ -70,8 +70,10 @@ where
             .truncate(false)
             .open(&metadata_path)
             .unwrap(); // TODO: Fix this unwrap later
-
         let sstables = Self::read_sstables(&metadata);
+        let count = sstables.iter().fold(0, |a, b| a + b.count) + memtable.len();
+        let metadata = Arc::new(Mutex::new(metadata));
+        let sstables = Arc::new(RwLock::new(sstables));
 
         Ok(Engine {
             metadata,
@@ -79,16 +81,13 @@ where
             sstables,
             config,
             serializer: storage_serializer,
+            count,
         })
     }
 
-    pub fn memtable_len(&self) -> usize {
-        self.memtable.len()
+    pub fn count(&self) -> usize {
+        self.count
     }
-    pub fn sstable_len(&self) -> usize {
-        self.sstables.len()
-    }
-
     pub fn insert(&mut self, record: T) -> Result<(), EngineError> {
         self.memtable
             .insert(record)
@@ -112,7 +111,8 @@ where
         }
 
         // Lookup in SSTables
-        for table in self.sstables.iter().rev() {
+        let tables = self.sstables.read().unwrap();
+        for table in tables.iter().rev() {
             let lookup = table.get(&key, self.config, self.serializer).unwrap(); // TODO: Handle These errors
             if let Some(value) = lookup {
                 return Ok(value);
@@ -124,35 +124,37 @@ where
     }
 
     pub fn compact(&mut self) {
-        let compact_file_count = self
-            .config
-            .parallel_merging_file_count
-            .min(self.sstables.len());
+        let (table, compact_file_count) = {
+            let tables = self.sstables.read().unwrap();
+            let compact_file_count = self.config.parallel_merging_file_count.min(tables.len());
 
-        if compact_file_count < 2 {
-            return;
-        }
+            if compact_file_count < 2 {
+                return;
+            }
 
-        let to_compact = &self.sstables[0..compact_file_count];
-        let (index_file, storage_file) = self.get_next_index_storage_logs_name();
-        println!("{} {}", index_file, storage_file);
+            let to_compact = &tables[0..compact_file_count];
+            let (index_file, storage_file) = self.get_next_index_storage_logs_name();
 
-        let table = compact(
-            to_compact,
-            self.serializer,
-            self.config,
-            storage_file,
-            index_file,
-        )
-        .unwrap();
+            let table = compact(
+                to_compact,
+                self.serializer,
+                self.config,
+                storage_file,
+                index_file,
+            )
+            .unwrap();
 
-        let mut remaining = self.sstables.split_off(compact_file_count);
+            (table, compact_file_count)
+        };
 
-        self.sstables.clear();
-        self.sstables.push(table);
-        self.sstables.append(&mut remaining);
+        let mut tables = self.sstables.write().unwrap();
+        let mut remaining = tables.split_off(compact_file_count);
 
-        self.recreate_metadata().unwrap();
+        tables.clear();
+        tables.push(table);
+        tables.append(&mut remaining);
+
+        self.create_metadata(tables.iter()).unwrap();
     }
 
     fn flush_if_ready(&mut self) {
@@ -167,6 +169,7 @@ where
         if pair_size * self.memtable.len() < *memtable_threshold {
             return;
         }
+        println!("Flushing Memtable begins");
 
         let (index_path, storage_path) = self.get_next_index_storage_logs_name();
         let tree = self.memtable.tree.read().unwrap();
@@ -182,7 +185,11 @@ where
 
         self.add_sstable_to_metadata(&table);
         self.memtable.clear().unwrap();
-        self.sstables.push(table);
+
+        let mut tables = self.sstables.write().unwrap();
+        tables.push(table);
+
+        println!("Flushing Memtable ends");
     }
 
     fn read_sstables(metadata_file: &File) -> Vec<SSTable> {
@@ -211,8 +218,9 @@ where
     }
 
     fn add_sstable_to_metadata(&mut self, table: &SSTable) {
-        self.metadata.seek(SeekFrom::End(0)).unwrap();
-        self.metadata
+        let mut metadata = self.metadata.lock().unwrap();
+        metadata.seek(SeekFrom::End(0)).unwrap();
+        metadata
             .write_all(
                 format!(
                     "{} {} {} {} {} {}\n",
@@ -241,9 +249,9 @@ where
         (index_path, storage_path)
     }
 
-    fn recreate_metadata(&self) -> IOResult<()> {
+    fn create_metadata<'b>(&self, tables: impl Iterator<Item = &'b SSTable>) -> IOResult<()> {
         let mut temp_file = NamedTempFile::new_in(&self.config.db_path)?;
-        for table in self.sstables.iter() {
+        for table in tables {
             temp_file.write_all(
                 format!(
                     "{} {} {} {} {} {}\n",

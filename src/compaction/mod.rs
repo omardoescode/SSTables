@@ -196,7 +196,6 @@ mod tests {
             engine.insert(photo).expect("Insert failed");
         }
 
-        println!("There are {} sstables", engine.sstable_len());
         // Delete specific keys
         let mapper = |i: &i32| format!("id_{}", i.to_string());
         let deleted: Vec<_> = [1, 2, 3, 4].iter().map(mapper).collect();
@@ -213,10 +212,6 @@ mod tests {
         // Run compaction multiple times to test stability
         for _ in 0..10 {
             engine.compact();
-            println!(
-                "Compaction is done. There are {} sstables",
-                engine.sstable_len()
-            );
         }
 
         // Verify data integrity after compaction
