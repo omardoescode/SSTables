@@ -1,8 +1,3 @@
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-};
-
 use SSTables::{
     config::Config, engine::Engine, memtable::MemTableRecord,
     serialization::BinarySerializationEngine,
@@ -10,65 +5,54 @@ use SSTables::{
 use bincode::{Decode, Encode};
 
 #[derive(Encode, Decode, Clone, Debug)]
-struct Photo {
-    id: i32,
-    url: String,
-    thumbnail_url: String,
+struct User {
+    username: String,
+    password: String,
+    photo_url: Option<String>,
 }
 
-impl MemTableRecord for Photo {
+impl MemTableRecord for User {
     const TYPE_NAME: &'static str = "Photo";
     fn get_key(&self) -> String {
-        self.id.to_string()
+        self.username.clone()
     }
 }
 
 fn main() {
     let serializer = BinarySerializationEngine;
     let config = Config::from_file("config.yaml").unwrap();
-    let mut engine = Engine::<Photo, BinarySerializationEngine, BinarySerializationEngine>::new(
+    let engine = Engine::<User, BinarySerializationEngine, BinarySerializationEngine>::new(
         &serializer,
         &serializer,
         &config,
     )
     .unwrap();
 
-    // Seed if empty
-    if true {
-        let file = File::open("resources/photos.txt").unwrap();
-        let reader = BufReader::new(file);
+    let count = config.initial_index_file_threshold
+        / (config.index_key_string_size + config.index_offset_size);
 
-        for line in reader.lines() {
-            let line = line.unwrap();
-            let values: Vec<&str> = line.split(" ").collect();
-
-            if values.len() != 3 {
-                panic!("Wrong value");
-            }
-
+    for newer in 0..100 {
+        for i in 0..count {
             engine
-                .insert(Photo {
-                    id: values[0].to_string().parse().unwrap(),
-                    url: values[1].to_string(),
-                    thumbnail_url: values[2].to_string(),
+                .insert(User {
+                    username: format!("user_{}", i),
+                    password: format!("pass_{}", newer),
+                    photo_url: None,
                 })
                 .unwrap();
         }
-
-        engine.delete("1000".to_string()).unwrap();
-        engine.delete("50".to_string()).unwrap();
-        engine.delete("5000".to_string()).unwrap();
     }
 
-    for _ in 0..5 {
-        engine.compact();
+    // Make sure all files exist
+    for i in 0..count {
+        let key = format!("user_{}", i);
+        assert!(engine.get(key).unwrap().is_some());
     }
-    for i in 1..5001 {
-        let photo = engine.get(i.to_string()).unwrap();
-        if i == 1000 || i == 50 || i == 5000 {
-            assert!(photo.is_none(), "{i} still exists");
-            continue;
-        }
-        assert!(photo.is_some(), "loading {i} failed");
+
+    engine.compact();
+
+    for i in 0..count {
+        let key = format!("user_{}", i);
+        assert!(engine.get(key).unwrap().is_some());
     }
 }

@@ -15,7 +15,6 @@ use crate::{
     sstable::error::SSTableError,
 };
 
-/// SSTable
 /// @definition: An implementation of sorted string tables. This struct is a reference to an
 /// immutable file on disk that has sorted records of the same schema
 /// @field index_path: A file that has an index on the primary keys in the immutable file
@@ -24,6 +23,7 @@ use crate::{
 /// @field max: The maximum key in this file. used for faster lookup
 /// @field size: The actual storage_file size. used for compaction
 /// @field count: the number of records in the sstable. This doens't include the tombstones
+#[derive(Debug)]
 pub struct SSTable {
     pub storage_path: String,
     pub index_path: String,
@@ -32,6 +32,7 @@ pub struct SSTable {
     pub size: usize,
     pub count: usize,
 }
+
 impl SSTable {
     pub fn create<'a, T, S, SS>(
         storage_path: &'a str,
@@ -68,12 +69,11 @@ impl SSTable {
                 .serialize(value.clone())
                 .map_err(|_| SSTableError::EncodingError)?;
 
-            println!("{} {:?}", key, value);
             writer
                 .write_all(&encoded)
                 .map_err(|err| SSTableError::LogWriteError { err })?;
         }
-        // writer.flush();
+        writer.flush();
         let size = writer.stream_position().unwrap() as usize;
 
         let index_file = File::create(index_path).map_err(|_| SSTableError::FileCreationError)?;
@@ -260,7 +260,7 @@ mod tests {
         let log_path = temp_dir.path().join(format!("{}.log", Uuid::new_v4()));
         let serializer = BinarySerializationEngine;
 
-        let mut memtable = MemTable::<Photo, BinarySerializationEngine>::open_or_build(
+        let memtable = MemTable::<Photo, BinarySerializationEngine>::open_or_build(
             log_path.to_str().unwrap(),
             &serializer,
         )

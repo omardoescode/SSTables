@@ -5,7 +5,7 @@ use std::{
     fs::{self, File, OpenOptions, create_dir_all},
     io::{BufRead, BufReader, Result as IOResult, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock, atomic::AtomicBool},
+    sync::{Arc, Mutex, RwLock},
 };
 
 use crate::{
@@ -29,7 +29,7 @@ where
     sstables: Arc<RwLock<Vec<SSTable>>>,
     config: &'a Config,
     serializer: &'a SS,
-    flushing: AtomicBool, // TODO: Use this field in flush_if_ready
+    flush_mutex: Mutex<()>,
 }
 
 impl<'a, T, S, SS> Engine<'a, T, S, SS>
@@ -81,7 +81,7 @@ where
             sstables,
             config,
             serializer: storage_serializer,
-            flushing: AtomicBool::new(false),
+            flush_mutex: Mutex::new(()),
         })
     }
 
@@ -121,30 +121,32 @@ where
     }
 
     pub fn compact(&self) {
-        let (table, compact_file_count) = {
-            let tables = self.sstables.read().unwrap();
-            let compact_file_count = self.config.parallel_merging_file_count.min(tables.len());
+        let tables = self.sstables.read().unwrap();
+        let compact_file_count = self.config.parallel_merging_file_count.min(tables.len());
 
-            if compact_file_count < 2 {
-                return;
-            }
+        if compact_file_count < 2 {
+            return;
+        }
 
-            let to_compact = &tables[0..compact_file_count];
-            let (index_file, storage_file) = self.get_next_index_storage_logs_name();
+        let to_compact = &tables[0..compact_file_count];
+        let old_paths: Vec<_> = to_compact
+            .iter()
+            .map(|table| (table.storage_path.clone(), table.index_path.clone()))
+            .collect();
+        let (index_file, storage_file) = self.get_next_index_storage_logs_name();
 
-            let table = compact(
-                to_compact,
-                self.serializer,
-                self.config,
-                storage_file,
-                index_file,
-            )
-            .unwrap();
+        let table = compact(
+            to_compact,
+            self.serializer,
+            self.config,
+            storage_file,
+            index_file,
+        )
+        .unwrap();
 
-            (table, compact_file_count)
-        };
-
+        drop(tables);
         let mut tables = self.sstables.write().unwrap();
+
         let mut remaining = tables.split_off(compact_file_count);
 
         tables.clear();
@@ -152,9 +154,15 @@ where
         tables.append(&mut remaining);
 
         self.create_metadata(tables.iter()).unwrap();
+
+        // Remove the tables
+        for (stor, ind) in old_paths {
+            fs::remove_file(&stor).unwrap();
+            fs::remove_file(&ind).unwrap();
+        }
     }
 
-    fn flush_if_ready(&self) {
+    pub fn flush_if_ready(&self) {
         let Config {
             index_offset_size,
             index_key_string_size,
@@ -163,6 +171,9 @@ where
         } = self.config;
 
         let pair_size = index_key_string_size + index_offset_size;
+
+        let _guard = self.flush_mutex.lock();
+
         if pair_size * self.memtable.len() < *memtable_threshold {
             return;
         }
@@ -225,7 +236,7 @@ where
                     table.min.clone(),
                     table.max.clone(),
                     table.count,
-                    table.size
+                    table.size,
                 )
                 .as_bytes(),
             )
@@ -256,7 +267,7 @@ where
                     table.min.clone(),
                     table.max.clone(),
                     table.count,
-                    table.size
+                    table.size,
                 )
                 .as_bytes(),
             )?;
