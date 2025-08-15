@@ -289,12 +289,13 @@ mod tests {
             memtable.tree.read().unwrap(),
             &serializer,
             &Config {
-                same_size_before_compaction_threshold: 3,
+                db_path: temp_dir.path().to_str().unwrap().to_string(),
                 index_key_string_size: 24,
                 index_offset_size: 8,
                 initial_index_file_threshold: 1024,
-                parallel_merging_file_count: 2,
-                db_path: "temp/db".to_string(),
+                compaction_threshold: 3,
+                compaction_tier_size: 2097152,
+                compaction_size_multiplier: 10,
             },
         )
         .expect("Failed to create SSTable");

@@ -229,8 +229,9 @@ mod tests {
             index_key_string_size: 24,
             index_offset_size: 8,
             initial_index_file_threshold: 1024,
-            parallel_merging_file_count: 2,
-            same_size_before_compaction_threshold: 2,
+            compaction_threshold: 3,
+            compaction_tier_size: 2097152,
+            compaction_size_multiplier: 10,
         };
 
         let serializer = BinarySerializationEngine;
