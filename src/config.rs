@@ -8,8 +8,9 @@ pub struct Config {
     pub index_key_string_size: usize,
     pub index_offset_size: usize,
     pub initial_index_file_threshold: usize,
-    pub parallel_merging_file_count: usize,
-    pub same_size_before_compaction_threshold: usize,
+    pub compaction_threshold: u32,
+    pub compaction_tier_size: usize,
+    pub compaction_size_multiplier: u32,
 }
 
 impl Config {

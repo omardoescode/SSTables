@@ -49,11 +49,11 @@ impl<T> Entry<T> {
 /// The order of SSTables is given such that an older index indicate the newest SSTable. This will
 /// be used for conflicting keys where the newer will be used
 pub fn compact<T, SS>(
-    tables: &[SSTable],
+    tables: Vec<&SSTable>,
     serializer: &SS,
     config: &Config,
-    new_storage_path: String,
     new_index_path: String,
+    new_storage_path: String,
 ) -> IOResult<SSTable>
 where
     T: MemTableRecord,

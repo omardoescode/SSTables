@@ -1,6 +1,7 @@
 mod error;
 
 use std::{
+    collections::HashMap,
     fmt::Debug,
     fs::{self, File, OpenOptions, create_dir_all},
     io::{BufRead, BufReader, Result as IOResult, Seek, SeekFrom, Write},
@@ -120,46 +121,52 @@ where
         Ok(None)
     }
 
+    // TODO: Rewrite this so that it would use size-tiered compaction instead
     pub fn compact(&self) {
-        let tables = self.sstables.read().unwrap();
-        let compact_file_count = self.config.parallel_merging_file_count.min(tables.len());
+        let mut tables = self.sstables.write().unwrap();
+        let mut tiers: HashMap<usize, Vec<usize>> = HashMap::new();
 
-        if compact_file_count < 2 {
-            return;
+        for (i, table) in tables.iter().enumerate() {
+            let size = table.size;
+            let tier = (size as f64 / self.config.compaction_tier_size as f64)
+                .log(self.config.compaction_size_multiplier as f64)
+                .floor() as usize;
+            // println!("Size: {}, Tier: {}", size, tier);
+
+            let entry = tiers.entry(tier).or_default();
+            entry.push(i);
         }
 
-        let to_compact = &tables[0..compact_file_count];
-        let old_paths: Vec<_> = to_compact
-            .iter()
-            .map(|table| (table.storage_path.clone(), table.index_path.clone()))
-            .collect();
-        let (index_file, storage_file) = self.get_next_index_storage_logs_name();
+        let Some((_, indices)) = tiers
+            .into_iter()
+            .find(|(_, indices)| indices.len() > self.config.compaction_threshold as usize)
+        else {
+            return;
+        };
 
-        let table = compact(
-            to_compact,
+        let (new_index_path, new_storage_path) = self.get_next_index_storage_logs_name();
+        let target_tables: Vec<&SSTable> = indices.iter().map(|idx| &tables[*idx]).collect();
+        let compacted_table = compact(
+            target_tables,
             self.serializer,
             self.config,
-            storage_file,
-            index_file,
+            new_index_path,
+            new_storage_path,
         )
-        .unwrap();
+        .unwrap(); // TODO: Handle these errors
 
-        drop(tables);
-        let mut tables = self.sstables.write().unwrap();
-
-        let mut remaining = tables.split_off(compact_file_count);
-
-        tables.clear();
-        tables.push(table);
-        tables.append(&mut remaining);
-
-        self.create_metadata(tables.iter()).unwrap();
-
-        // Remove the tables
-        for (stor, ind) in old_paths {
-            fs::remove_file(&stor).unwrap();
-            fs::remove_file(&ind).unwrap();
+        // Write the table
+        let last_idx = indices.last().unwrap();
+        tables[*last_idx] = compacted_table;
+        for other_idx in indices.iter().rev() {
+            if *other_idx == *last_idx {
+                continue;
+            }
+            tables.remove(*other_idx);
         }
+
+        // Write the metadata
+        self.create_metadata(tables.iter()).unwrap();
     }
 
     pub fn flush_if_ready(&self) {

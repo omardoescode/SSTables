@@ -31,16 +31,14 @@ fn main() {
     let count = config.initial_index_file_threshold
         / (config.index_key_string_size + config.index_offset_size);
 
-    for newer in 0..100 {
-        for i in 0..count {
-            engine
-                .insert(User {
-                    username: format!("user_{}", i),
-                    password: format!("pass_{}", newer),
-                    photo_url: None,
-                })
-                .unwrap();
-        }
+    for i in 0..count * 10 {
+        engine
+            .insert(User {
+                username: format!("user_{}", i),
+                password: format!("pass_{}", i),
+                photo_url: None,
+            })
+            .unwrap();
     }
 
     // Make sure all files exist
